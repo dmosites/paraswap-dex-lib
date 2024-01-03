@@ -19,14 +19,14 @@ const Levels: Pricing[] = [
   {
     baseToken: smartTokens.DAI.address,
     quoteToken: smartTokens.WETH.address,
-    minimum: '1000',
+    minimum: '0',
     bid: [['10000000000000000000', '0.9']],
     ask: [['10000000000000000000', '1.1']],
   },
   {
     baseToken: smartTokens.WETH.address,
     quoteToken: smartTokens.DAI.address,
-    minimum: '1000',
+    minimum: '0',
     bid: [['10000000000000000000', '1']],
     ask: [['10000000000000000000', '1']],
   },

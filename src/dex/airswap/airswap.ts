@@ -34,7 +34,7 @@ import {
   getServerPricingKey,
   getPoolIdentifier,
   getAllPricingERC20,
-  getOrder,
+  getOrderERC20,
   caster,
 } from './utils';
 
@@ -58,7 +58,6 @@ export class AirSwap
 
   private registry: AirSwapRegistry | null = null;
   private worker: Fetcher<AirSwapPricingResponse> | null = null;
-  private requestId: number = 0;
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(AirSwapConfig);
@@ -104,11 +103,7 @@ export class AirSwap
         info: {
           requestOptions: { url },
           requestFunc: (options: any) => {
-            return getAllPricingERC20(
-              options,
-              this.requestId++,
-              this.dexHelper,
-            );
+            return getAllPricingERC20(options, this.dexHelper);
           },
           caster: caster.bind(this),
         },
@@ -222,7 +217,7 @@ export class AirSwap
       `${this.dexKey}-${this.network}: url was not provided to preProcessTransaction`,
     );
 
-    const order = await getOrder(
+    const order = await getOrderERC20(
       side,
       this.dexHelper,
       url,

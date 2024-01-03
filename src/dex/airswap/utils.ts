@@ -3,7 +3,7 @@ import joi from 'joi';
 import { Token } from '../../types';
 import { validateAndCast } from '../../lib/validators';
 import { IDexHelper } from '../../dex-helper/idex-helper';
-import { Network, SwapSide } from '../../constants';
+import { SwapSide } from '../../constants';
 import { AirSwapPricingResponse } from './types';
 
 export function getServerPricingKey(url: string): string {
@@ -25,11 +25,7 @@ export function getPoolIdentifier(
   }-${encodeURIComponent(url)}`;
 }
 
-export async function getAllPricingERC20(
-  options: any,
-  id: number,
-  dexHelper: IDexHelper,
-) {
+export async function getAllPricingERC20(options: any, dexHelper: IDexHelper) {
   return await dexHelper.httpRequest.request({
     method: 'POST',
     headers: {
@@ -37,7 +33,7 @@ export async function getAllPricingERC20(
       ...options.headers,
     },
     data: {
-      id,
+      id: uuid(),
       method: 'getAllPricingERC20',
       params: {},
     },
@@ -45,7 +41,7 @@ export async function getAllPricingERC20(
   });
 }
 
-export async function getOrder(
+export async function getOrderERC20(
   side: SwapSide,
   dexHelper: IDexHelper,
   url: string,
@@ -103,7 +99,7 @@ export function remove(array: string[], item: string) {
 
 export const pricingResponseValidator = joi.object({
   jsonrpc: joi.string(),
-  id: joi.number(),
+  id: joi.string(),
   result: joi.array().items({
     baseToken: joi.string().required(),
     quoteToken: joi.string().required(),
