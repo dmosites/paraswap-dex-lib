@@ -43,6 +43,10 @@ export const CACHE_TTL = 3000;
 export const POLLING_INTERVAL = 3000;
 export const GAS_COST = 100_000;
 
+/**
+ * AirSwap
+ * https://airswap.io/
+ */
 export class AirSwap
   extends SimpleExchange
   implements IDex<AirSwapOrderResponse>
@@ -58,6 +62,7 @@ export class AirSwap
 
   private registry: AirSwapRegistry | null = null;
   private worker: Fetcher<AirSwapPricingResponse> | null = null;
+  private overrideServerURLs: string[] = [];
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(AirSwapConfig);
@@ -73,9 +78,15 @@ export class AirSwap
     this.swapERC20Address = AirSwapConfig.AirSwap[network].swapERC20Address;
   }
 
+  /**
+   * @name initializePricing
+   * @description Called by the engine at startup
+   */
   async initializePricing(blockNumber: number): Promise<void> {
     this.overrideServerURLs =
       this.dexHelper.config.data.airSwapOverrideServerURLs;
+
+    // Start the Registry to track server URLs
     this.registry = new AirSwapRegistry(
       this.dexKey,
       this.network,
@@ -84,10 +95,14 @@ export class AirSwap
     );
 
     if (!this.dexHelper.config.isSlave) {
+      // Only poll pricing if this instance is not a slave
+
       if (this.overrideServerURLs.length) {
+        // Poll a specific list of URLs from config
         this.startWorker(this.overrideServerURLs);
       } else {
-        this.registry.subscribe(this.startWorker.bind(this));
+        // Poll active URLs; restart poller when updated
+        this.registry.setUpdateCallback(this.startWorker.bind(this));
         this.registry.initialize(blockNumber, {
           forceRegenerate: true,
         });
@@ -95,8 +110,15 @@ export class AirSwap
     }
   }
 
+  /**
+   * @name releaseResources
+   * @description Called by the adapter when server URLs change
+   * @param urls string[] array of URLs to poll
+   */
   startWorker(urls: string[]): void {
     this.worker?.stopPolling();
+
+    // Start a Fetcher to update pricing on an interval
     this.worker = new Fetcher(
       this.dexHelper.httpRequest,
       urls.map(url => ({
@@ -109,6 +131,8 @@ export class AirSwap
         },
         handler: async (resp: AirSwapPricingResponse) => {
           const serverPricingKey = getServerPricingKey(url);
+
+          // Write pricing to cache to be read async
           await this.dexHelper.cache.rawset(
             serverPricingKey,
             JSON.stringify(resp.result),
@@ -122,12 +146,22 @@ export class AirSwap
     this.worker.startPolling();
   }
 
+  /**
+   * @name releaseResources
+   * @description Called by the engine at shutdown
+   */
   releaseResources(): void {
     this.worker?.stopPolling();
   }
 
-  overrideServerURLs: string[] = [];
-
+  /**
+   * @name getPoolIdentifiers
+   * @description Called by the engine to get pool identifiers for a token pair
+   * @param quoteToken the first token of the pair
+   * @param baseToken the second token of the pair
+   * @param side either sell or buy
+   * @param blockNumber not used
+   */
   async getPoolIdentifiers(
     quoteToken: Token,
     baseToken: Token,
@@ -146,14 +180,25 @@ export class AirSwap
       tokenOne = this.dexHelper.config.wrapETH(baseToken);
       tokenTwo = this.dexHelper.config.wrapETH(quoteToken);
     }
+    // Our pools are servers so identifiers include URL
     return serverURLs?.map(url =>
       getPoolIdentifier(this.dexKey, tokenOne, tokenTwo, url),
     );
   }
 
+  /**
+   * @name getPricesVolume
+   * @description Called by the engine to get pricing for a token pair
+   * @param quoteToken the first token of the pair
+   * @param baseToken the second token of the pair
+   * @param amounts the amounts to get prices for
+   * @param side either sell or buy
+   * @param blockNumber
+   * @param limitPools a set of pool identifiers to use
+   */
   async getPricesVolume(
-    baseToken: Token,
     quoteToken: Token,
+    baseToken: Token,
     amounts: bigint[],
     side: SwapSide,
     blockNumber: number,
@@ -161,15 +206,21 @@ export class AirSwap
   ): Promise<null | ExchangePrices<AirSwapOrderResponse>> {
     const poolIdentifiers =
       limitPools ??
-      (await this.getPoolIdentifiers(baseToken, quoteToken, side, blockNumber));
+      (await this.getPoolIdentifiers(quoteToken, baseToken, side, blockNumber));
     const result: ExchangePrices<AirSwapOrderResponse> = [];
+
+    // Get pricing by each of our servers (pools)
     await poolIdentifiers.forEach(async poolIdentifier => {
       const prices: bigint[] = [];
       const url = decodeURIComponent(poolIdentifier.split('-')[3]);
       const serverPricingKey = getServerPricingKey(url);
+
+      // Get pricing from cache written by worker (fetcher)
       const cached = await this.dexHelper.cache.rawget(serverPricingKey);
       if (cached) {
         const pricing: Pricing[] = JSON.parse(cached) || [];
+
+        // For each amount get price from cached pricing
         amounts.forEach(async amount => {
           try {
             const price = getPriceForAmount(
@@ -204,10 +255,19 @@ export class AirSwap
     return result;
   }
 
+  /**
+   * @name preProcessTransaction
+   * @description Called by the engine to get a signed order
+   * @param optimalSwapExchange order request params
+   * @param quoteToken the first token of the pair
+   * @param baseToken the second token of the pair
+   * @param side either sell or buy
+   * @param options transaction options
+   */
   async preProcessTransaction(
     optimalSwapExchange: OptimalSwapExchange<AirSwapOrderResponse>,
-    baseToken: Token,
     quoteToken: Token,
+    baseToken: Token,
     side: SwapSide,
     options: PreprocessTransactionOptions,
   ): Promise<[OptimalSwapExchange<AirSwapOrderResponse>, ExchangeTxInfo]> {
@@ -217,15 +277,16 @@ export class AirSwap
       `${this.dexKey}-${this.network}: url was not provided to preProcessTransaction`,
     );
 
+    // Call the server to get an order
     const order = await getOrderERC20(
       side,
       this.dexHelper,
       url,
       this.network.toString(),
       this.swapERC20Address,
-      quoteToken.address,
-      optimalSwapExchange.srcAmount,
       baseToken.address,
+      optimalSwapExchange.srcAmount,
+      quoteToken.address,
       this.augustusAddress,
       MIN_EXPIRY.toString(),
       options.txOrigin,
@@ -243,11 +304,20 @@ export class AirSwap
     ];
   }
 
+  /**
+   * @name getSimpleParam
+   * @description Called by the engine to get a signed order
+   * @param quoteToken the first token of the pair
+   * @param baseToken the second token of the pair
+   * @param quoteAmount the amount of quoteToken
+   * @param baseAmount the amount of baseToken
+   * @param side either sell or buy
+   */
   async getSimpleParam(
-    srcToken: string,
-    destToken: string,
-    srcAmount: string,
-    destAmount: string,
+    quoteToken: string,
+    baseToken: string,
+    quoteAmount: string,
+    baseAmount: string,
     data: AirSwapOrderResponse,
     side: SwapSide,
   ): Promise<SimpleExchangeParam> {
@@ -283,6 +353,12 @@ export class AirSwap
     );
   }
 
+  /**
+   * @name getTopPoolsForToken
+   * @description Called by the engine to get token pool sizes
+   * @param tokenAddress the address of the token
+   * @param limit max number of results
+   */
   async getTopPoolsForToken(
     tokenAddress: Address,
     limit: number,
@@ -291,8 +367,26 @@ export class AirSwap
     return [];
   }
 
+  /**
+   * @name getTokenFromAddress
+   * @description Called by the engine to get token metadata
+   * @param address the address of the token
+   */
   getTokenFromAddress?(address: Address): Token {
     return { address, decimals: 0 };
+  }
+
+  async updatePoolState(): Promise<void> {
+    // Pricing is updated on an interval by the fetcher.
+    return Promise.resolve();
+  }
+
+  async isBlacklisted(userAddress?: string | undefined): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  async setBlacklist(userAddress: string): Promise<boolean> {
+    return Promise.resolve(false);
   }
 
   // @TODO PARASWAP
@@ -325,18 +419,5 @@ export class AirSwap
       payload,
       networkFee: '0',
     };
-  }
-
-  async updatePoolState(): Promise<void> {
-    // Pricing is updated on an interval by the fetcher.
-    return Promise.resolve();
-  }
-
-  async isBlacklisted(userAddress?: string | undefined): Promise<boolean> {
-    return Promise.resolve(false);
-  }
-
-  async setBlacklist(userAddress: string): Promise<boolean> {
-    return Promise.resolve(false);
   }
 }

@@ -24,6 +24,10 @@ const EMPTY_STATE: AirSwapRegistryState = {
   stakersByToken: {},
 };
 
+/**
+ * AirSwap Server URL Registry
+ * Determines active server URLs by contract state and emitted events.
+ */
 export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryState> {
   handlers: {
     [event: string]: (
@@ -35,6 +39,7 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
   logDecoder: (log: Log) => any;
   registryInterface: Interface;
   addressesSubscribed: string[];
+  updateCallback: Function | null = null;
 
   constructor(
     protected dexKey: string,
@@ -53,14 +58,29 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     this.logDecoder = this.registryInterface.parseLog.bind(this);
   }
 
-  updateCallback: Function | null = null;
-  subscribe(callback: Function) {
+  /**
+   * @name setUpdateCallback
+   * @description Set a callback handler for URL updates
+   * @param callback the callback function
+   */
+  setUpdateCallback(callback: Function) {
     this.updateCallback = callback;
   }
-  updateSubscribers() {
+
+  /**
+   * @name callUpdateCallback
+   * @description Call the update callback handler
+   */
+  callUpdateCallback() {
     this.updateCallback && this.updateCallback(this.getServerURLs());
   }
 
+  /**
+   * @name getServerURLs
+   * @description Get active URLs
+   * @param tokenOne optional first token of a pair
+   * @param tokenTwo optional second token of a pair
+   */
   getServerURLs(tokenOne?: string, tokenTwo?: string): string[] {
     if (this.serverURLsOverride?.length) {
       return this.serverURLsOverride;
@@ -80,6 +100,12 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
       });
   }
 
+  /**
+   * @name initialize
+   * @description Called by instantiator; calls on super
+   * @param blockNumber block number to initialize for
+   * @param options options for initial state
+   */
   async initialize(
     blockNumber: number,
     options?: InitializeStateOptions<AirSwapRegistryState>,
@@ -87,6 +113,12 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     await super.initialize(blockNumber, options);
   }
 
+  /**
+   * @name handleSetServerURL
+   * @description handle SetServerURL contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleSetServerURL(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -95,9 +127,17 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     const url = event.args[1];
     const newState = _.cloneDeep(state) as AirSwapRegistryState;
     newState.stakerServerURLs[staker] = url;
+
+    this.callUpdateCallback();
     return newState;
   }
 
+  /**
+   * @name handleAddProtocols
+   * @description handle AddProtocols contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleAddProtocols(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -111,9 +151,17 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
       newState.stakersByProtocol[protocol].push(staker);
       newState.protocolsByStaker[staker].push(protocol);
     });
+
+    this.callUpdateCallback();
     return newState;
   }
 
+  /**
+   * @name handleRemoveProtocols
+   * @description handle RemoveProtocols contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleRemoveProtocols(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -132,9 +180,17 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
         protocol,
       );
     });
+
+    this.callUpdateCallback();
     return newState;
   }
 
+  /**
+   * @name handleAddTokens
+   * @description handle AddTokens contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleAddTokens(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -151,6 +207,12 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     return newState;
   }
 
+  /**
+   * @name handleRemoveTokens
+   * @description handle RemoveTokens contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleRemoveTokens(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -172,6 +234,12 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     return newState;
   }
 
+  /**
+   * @name handleUnsetServer
+   * @description handle UnsetServer contract event
+   * @param event the event itself
+   * @param state state to update
+   */
   handleUnsetServer(
     event: LogDescription,
     state: DeepReadonly<AirSwapRegistryState>,
@@ -189,9 +257,16 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
         staker,
       );
     });
+
+    this.callUpdateCallback();
     return newState;
   }
 
+  /**
+   * @name generateState
+   * @description generate initial state from logs until a block
+   * @param blockNumber block number to stop at
+   */
   async generateState(
     blockNumber: number,
   ): Promise<DeepReadonly<AirSwapRegistryState>> {
@@ -207,6 +282,12 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     return state;
   }
 
+  /**
+   * @name processLog
+   * @description process a log (event) emitted on the contract
+   * @param state state to update
+   * @param log actual log emitted
+   */
   protected processLog(
     state: DeepReadonly<AirSwapRegistryState>,
     log: Readonly<Log>,
@@ -222,6 +303,13 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
     return null;
   }
 
+  /**
+   * @name processBlockLogs
+   * @description process the logs for a block
+   * @param state state to update
+   * @param logs logs emitted on the block
+   * @param blockHeader the block
+   */
   protected async processBlockLogs(
     state: DeepReadonly<AirSwapRegistryState>,
     logs: Readonly<Log>[],
