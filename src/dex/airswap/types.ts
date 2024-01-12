@@ -1,7 +1,5 @@
-import { Address, DexConfigMap, AdapterMappings } from '../../types';
+import { Address } from '../../types';
 import { Levels, OrderERC20 } from '@airswap/types';
-import { RequestHeaders } from '../../dex-helper';
-import { RequestConfig, Response } from '../../dex-helper/irequest-wrapper';
 
 export type AirSwapDeployment = {
   swapERC20Address: Address;
