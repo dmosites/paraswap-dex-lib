@@ -205,9 +205,14 @@ export class AirSwap
     side: SwapSide,
     _: number,
   ): Promise<string[]> {
-    const serverURLs: string[] =
-      this.overrideServerURLs ||
-      this.registry?.getServerURLs(quoteToken.address, baseToken.address);
+    // Prefer explicit overrides when provided and *non-empty*; otherwise ask
+    // the registry for servers supporting the token pair.
+    const fetchedURLs =
+      this.overrideServerURLs && this.overrideServerURLs.length
+        ? this.overrideServerURLs
+        : this.registry?.getServerURLs(quoteToken.address, baseToken.address);
+
+    const serverURLs: string[] = fetchedURLs ?? [];
     let tokenOne: Token;
     let tokenTwo: Token;
     if (side === SwapSide.SELL) {
@@ -253,18 +258,59 @@ export class AirSwap
       const serverPricingKey = getServerPricingKey(url);
 
       // Retrieve cached pricing published by the worker
-      const cached = await this.dexHelper.cache.rawget(serverPricingKey);
+      let cached = await this.dexHelper.cache.rawget(serverPricingKey);
+
+      // If cache is empty (e.g., very first access before worker saved data),
+      // perform a direct, synchronous fetch to the maker to obtain pricing so
+      // that callers don't receive empty results.
+      if (!cached) {
+        try {
+          const resp = await getAllPricingERC20({ url }, this.dexHelper);
+          if (resp && Array.isArray((resp as any).data?.result)) {
+            cached = JSON.stringify((resp as any).data.result);
+            // Store in cache for subsequent reads (short TTL like worker).
+            await this.dexHelper.cache.rawset(
+              serverPricingKey,
+              cached,
+              CACHE_TTL,
+            );
+          }
+        } catch (e) {
+          this.logger.warn('Direct pricing fetch failed', url, e);
+        }
+      }
 
       if (cached) {
         const pricing: Pricing[] = JSON.parse(cached) || [];
 
         for (const amount of amounts) {
           try {
+            // Map Paraswap side semantics to maker-side semantics.
+            // Maker pricing defines:
+            //   bid → maker buys baseToken, paying in quoteToken
+            //   ask → maker sells baseToken, receiving quoteToken
+            //
+            // Paraswap SELL (we provide quoteToken, receive baseToken)
+            //   → maker is BUYER of quoteToken, so we need BID prices.
+            // Paraswap BUY (we provide quoteToken, receive baseToken)
+            //   → maker is SELLER of baseToken, so we need ASK prices.
+
+            const isSell = side === SwapSide.SELL;
+
+            // Maker API: 'sell' -> use bid levels (maker buys baseToken),
+            // 'buy'  -> use ask levels (maker sells baseToken).
+            const makerSide = isSell ? 'sell' : 'buy';
+
+            // Paraswap SELL: srcToken (quoteToken param) is being sold, so it
+            // must be the maker's baseToken.  BUY keeps original orientation.
+            const lookupBase = isSell ? quoteToken.address : baseToken.address;
+            const lookupQuote = isSell ? baseToken.address : quoteToken.address;
+
             const price = getPriceForAmount(
-              side === SwapSide.SELL ? 'sell' : 'buy',
+              makerSide,
               amount.toString(),
-              baseToken.address,
-              quoteToken.address,
+              lookupBase,
+              lookupQuote,
               pricing,
             );
             prices.push(BigInt(price ?? 0));

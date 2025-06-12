@@ -5,7 +5,10 @@ import { ethers } from 'ethers';
 import { Network, ContractMethod, SwapSide, MAX_UINT } from '../../constants';
 import { generateConfig } from '../../config';
 import { newTestE2E } from '../../../tests/utils-e2e';
-import { SmartTokens, GENERIC_ADDR1 } from '../../../tests/constants-e2e';
+import {
+  Tokens as SmartTokens,
+  GENERIC_ADDR1,
+} from '../../../tests/constants-e2e';
 import { startTestServer } from './test-server.test';
 import { AirSwapConfig } from './config';
 import { Config } from '../../types';
@@ -38,19 +41,7 @@ describe('AirSwap E2E Mainnet', () => {
   describe('AirSwap', () => {
     const dexKey = 'AirSwap';
 
-    srcToken.addBalance(testAccount.address, MAX_UINT);
-    srcToken.addAllowance(
-      testAccount.address,
-      AirSwapConfig.AirSwap[network].swapERC20Address,
-      MAX_UINT,
-    );
-
-    destToken.addBalance(testAccount.address, MAX_UINT);
-    destToken.addAllowance(
-      testAccount.address,
-      AirSwapConfig.AirSwap[network].swapERC20Address,
-      MAX_UINT,
-    );
+    // Token balances/allowances are set inside newTestE2E via Tenderly overrides.
 
     describe('Simpleswap', () => {
       it('SELL WETH -> DAI', async () => {
@@ -60,12 +51,11 @@ describe('AirSwap E2E Mainnet', () => {
           destToken,
           senderAddress: GENERIC_ADDR1,
           thirdPartyAddress: testAccount.address,
-          _amount: '10000000000000000',
+          _amount: '10000000000000000000',
           swapSide: SwapSide.SELL,
-          dexKey: dexKey,
+          dexKeys: dexKey,
           contractMethod: ContractMethod.simpleSwap,
           network: network,
-          sleepMs: 3000,
           skipTenderly: true,
         });
       });

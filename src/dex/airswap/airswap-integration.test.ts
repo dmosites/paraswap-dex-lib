@@ -8,7 +8,7 @@ import { AirSwap } from './airswap';
 import { checkPoolPrices, sleep } from '../../../tests/utils';
 import { BI_POWS } from '../../bigint-constants';
 import { startTestServer } from './test-server.test';
-import { SmartTokens } from '../../../tests/constants-e2e';
+import { Tokens as SmartTokens } from '../../../tests/constants-e2e';
 
 const PK_KEY = process.env.TEST_PK_KEY;
 if (!PK_KEY) {
@@ -21,8 +21,8 @@ const stopServer = startTestServer(testAccount);
 process.env.AIRSWAP_SERVER_URLS_1 = `http://localhost:${stopServer.port}`;
 
 const smartTokens = SmartTokens[1];
-const WETH = smartTokens.WETH.token;
-const DAI = smartTokens.DAI.token;
+const WETH = smartTokens.WETH;
+const DAI = smartTokens.DAI;
 
 const amountsForSell = [
   0n,
@@ -44,19 +44,19 @@ describe('AirSwap', function () {
   it('getPoolIdentifiers and getPricesVolume', async function () {
     const dexHelper = new DummyDexHelper(Network.MAINNET);
     const blocknumber = await dexHelper.web3Provider.eth.getBlockNumber();
-    const airswap = new AirSwap(Network.MAINNET, dexKey, dexHelper);
+    const airswapInstance = new AirSwap(Network.MAINNET, dexKey, dexHelper);
 
-    airswap.initializePricing(blocknumber);
+    airswapInstance.initializePricing(blocknumber);
     await sleep(5000);
 
-    const pools = await airswap.getPoolIdentifiers(
+    const pools = await airswapInstance.getPoolIdentifiers(
       WETH,
       DAI,
       SwapSide.SELL,
       blocknumber,
     );
     expect(pools.length).toBeGreaterThan(0);
-    const poolPrices = await airswap.getPricesVolume(
+    const poolPrices = await airswapInstance.getPricesVolume(
       WETH,
       DAI,
       amountsForSell,
@@ -67,9 +67,14 @@ describe('AirSwap', function () {
 
     expect(poolPrices).not.toBeNull();
     checkPoolPrices(poolPrices!, amountsForSell, SwapSide.SELL, dexKey);
+
+    // store instance for cleanup
+    (global as any).airswapTestInstance = airswapInstance;
   });
 
   afterAll(() => {
     stopServer();
+    const instance = (global as any).airswapTestInstance as AirSwap | undefined;
+    instance?.releaseResources();
   });
 });

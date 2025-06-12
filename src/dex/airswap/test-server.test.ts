@@ -10,12 +10,12 @@ import {
   toDecimalString,
   getCostByPricing,
 } from '@airswap/utils';
-import { Pricing } from '@airswap/types';
-import { SmartTokens } from '../../../tests/constants-e2e';
+import { Pricing } from '@airswap/utils';
+import { Tokens } from '../../../tests/constants-e2e';
 import { PORT_TEST_SERVER } from '../../constants';
 import { AirSwapConfig } from './config';
 
-const smartTokens = SmartTokens[1];
+const smartTokens = Tokens[1];
 const Levels: Pricing[] = [
   {
     baseToken: smartTokens.DAI.address,
