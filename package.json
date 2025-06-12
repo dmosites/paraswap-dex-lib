@@ -79,7 +79,11 @@
     "web3-eth-abi": "1.4.0",
     "web3-eth-contract": "1.6.0",
     "web3-utils": "1.6.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "@airswap/registry": "5.0.1",
+    "@airswap/swap-erc20": "5.0.1",
+    "@airswap/swap": "5.0.1",
+    "@airswap/utils": "5.2.0"
   },
   "sideEffects": false
 }
