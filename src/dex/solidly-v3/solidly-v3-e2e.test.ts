@@ -28,12 +28,14 @@ function testForNetwork(
     [
       SwapSide.SELL,
       [
-        ContractMethod.simpleSwap,
-        ContractMethod.multiSwap,
-        ContractMethod.megaSwap,
+        ContractMethod.swapExactAmountIn,
+        // ContractMethod.simpleSwap,
+        // ContractMethod.multiSwap,
+        // ContractMethod.megaSwap,
       ],
     ],
-    [SwapSide.BUY, [ContractMethod.simpleBuy, ContractMethod.buy]],
+    // [SwapSide.BUY, [ContractMethod.simpleBuy, ContractMethod.buy]],
+    [SwapSide.BUY, [ContractMethod.swapExactAmountOut]],
   ]);
 
   sideToContractMethods.forEach((contractMethods, side) =>
@@ -108,13 +110,157 @@ describe('SolidlyV3 E2E', () => {
       [
         {
           name: 'USDC',
-          sellAmount: '400000000',
+          sellAmount: '4000000',
           buyAmount: '4000000',
         },
         {
           name: 'USDT',
-          sellAmount: '500000000',
+          sellAmount: '5000000',
           buyAmount: '5000000',
+        },
+      ],
+    ];
+
+    testForNetwork(network, dexKey, pairs);
+  });
+
+  describe('Fantom', () => {
+    const network = Network.FANTOM;
+
+    const pairs = [
+      [
+        {
+          name: NativeTokenSymbols[network],
+          sellAmount: '100000000000000000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'SOLID',
+          sellAmount: '1000000000000000000',
+          buyAmount: '1000000000',
+        },
+      ],
+      [
+        {
+          name: 'WFTM',
+          sellAmount: '1000000000000000000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'SOLID',
+          sellAmount: '1000000000000000000',
+          buyAmount: '1000000000',
+        },
+      ],
+    ];
+
+    testForNetwork(network, dexKey, pairs);
+  });
+
+  describe('Base', () => {
+    const network = Network.BASE;
+
+    const pairs = [
+      [
+        {
+          name: NativeTokenSymbols[network],
+          sellAmount: '100000000000000', //0.0001 ETH
+          buyAmount: '100000000',
+        },
+        {
+          name: 'USDC',
+          sellAmount: '1000000', // $1
+          buyAmount: '1000000', // $1
+        },
+      ],
+      [
+        {
+          name: 'USDC',
+          sellAmount: '100000',
+          buyAmount: '100000',
+        },
+        {
+          name: 'WETH',
+          sellAmount: '100000000000000', //0.0001 ETH
+          buyAmount: '100000000',
+        },
+      ],
+      [
+        {
+          name: 'USDC',
+          sellAmount: '100000',
+          buyAmount: '100000',
+        },
+        {
+          name: 'USDbC',
+          sellAmount: '100000',
+          buyAmount: '100000',
+        },
+      ],
+    ];
+
+    testForNetwork(network, dexKey, pairs);
+  });
+
+  describe('Optimism', () => {
+    const network = Network.OPTIMISM;
+
+    const pairs = [
+      [
+        {
+          name: NativeTokenSymbols[network],
+          sellAmount: '10000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'wstETH',
+          sellAmount: '1000000000',
+          buyAmount: '1000000000',
+        },
+      ],
+      [
+        {
+          name: 'USDC',
+          sellAmount: '1000000000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'USDT',
+          sellAmount: '100000',
+          buyAmount: '1000000000',
+        },
+      ],
+    ];
+
+    testForNetwork(network, dexKey, pairs);
+  });
+
+  describe('Arbitrum', () => {
+    const network = Network.ARBITRUM;
+
+    const pairs = [
+      [
+        {
+          name: NativeTokenSymbols[network],
+          sellAmount: '10000000000000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'USDC',
+          sellAmount: '1000000000',
+          buyAmount: '1000000000',
+        },
+      ],
+      [
+        {
+          name: 'USDC',
+          sellAmount: '1000000000',
+          buyAmount: '1000000000',
+        },
+        {
+          name: 'USDT',
+          sellAmount: '100000',
+          buyAmount: '1000000000',
         },
       ],
     ];

@@ -11,7 +11,7 @@ export const TICK_BITMAP_BUFFER = 8n;
 export const MAX_PRICING_COMPUTATION_STEPS_ALLOWED = 128;
 
 export const PANCAKESWAPV3_SUBGRAPH_URL =
-  'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3';
+  '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
 
 export const PANCAKESWAPV3_EFFICIENCY_FACTOR = 3;
 
@@ -34,3 +34,5 @@ export const ZERO_ORACLE_OBSERVATION = {
 export const OUT_OF_RANGE_ERROR_POSTFIX = `INVALID_TICK_BIT_MAP_RANGES`;
 
 export const DEFAULT_POOL_INIT_CODE_HASH = `0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54`;
+
+export const INACTIVE_POOL_AGE_MS = 3 * 30 * 24 * 60 * 60 * 1000; // 3 months

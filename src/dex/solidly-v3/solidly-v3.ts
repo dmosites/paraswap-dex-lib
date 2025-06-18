@@ -13,6 +13,7 @@ import {
   PoolPrices,
   PreprocessTransactionOptions,
   ExchangeTxInfo,
+  DexExchangeParam,
 } from '../../types';
 import { SwapSide, Network, CACHE_PREFIX } from '../../constants';
 import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
@@ -33,7 +34,6 @@ import {
 } from '../simple-exchange';
 import { SolidlyV3Config, Adapters, PoolsToPreload } from './config';
 import { SolidlyV3EventPool } from './solidly-v3-pool';
-import UniswapV3QuoterV2ABI from '../../abi/uniswap-v3/UniswapV3QuoterV2.abi.json';
 import DirectSwapABI from '../../abi/DirectSwap.json';
 import SolidlyV3StateMulticallABI from '../../abi/solidly-v3/SolidlyV3StateMulticall.abi.json';
 import SolidlyV3PoolABI from '../../abi/solidly-v3/SolidlyV3Pool.abi.json';
@@ -47,15 +47,17 @@ import { assert, DeepReadonly } from 'ts-essentials';
 import { uniswapV3Math } from './contract-math/uniswap-v3-math';
 import { Contract } from 'web3-eth-contract';
 import { AbiItem } from 'web3-utils';
-import { OptimalSwapExchange } from '@paraswap/core';
 import { TickMath } from './contract-math/TickMath';
 import { OnPoolCreatedCallback, SolidlyV3Factory } from './solidly-v3-factory';
+import { SpecialDex } from '../../executor/types';
 
 type PoolPairsInfo = {
   token0: Address;
   token1: Address;
   fee: string;
 };
+
+const PoolsRegistryHashKey = `${CACHE_PREFIX}_poolsRegistry`;
 
 const UNISWAPV3_CLEAN_NOT_EXISTING_POOL_TTL_MS = 60 * 60 * 24 * 1000; // 24 hours
 const UNISWAPV3_CLEAN_NOT_EXISTING_POOL_INTERVAL_MS = 30 * 60 * 1000; // Once in 30 minutes
@@ -91,7 +93,6 @@ export class SolidlyV3
     protected dexHelper: IDexHelper,
     protected adapters = Adapters[network] || {},
     readonly poolIface = new Interface(SolidlyV3PoolABI),
-    readonly quoterIface = new Interface(UniswapV3QuoterV2ABI),
     protected config = SolidlyV3Config[dexKey][network],
     protected poolsToPreload = PoolsToPreload[dexKey]?.[network] || [],
   ) {
@@ -165,6 +166,8 @@ export class SolidlyV3
           maxTimestamp,
         );
       };
+
+      void cleanExpiredNotExistingPoolsKeys();
 
       this.intervalTask = setInterval(
         cleanExpiredNotExistingPoolsKeys.bind(this),
@@ -258,16 +261,6 @@ export class SolidlyV3
         ] = null;
         return null;
       }
-
-      await this.dexHelper.cache.hset(
-        this.dexmapKey,
-        key,
-        JSON.stringify({
-          token0,
-          token1,
-          fee: tickSpacing.toString(),
-        }),
-      );
     }
 
     this.logger.trace(`starting to listen to new pool: ${key}`);
@@ -344,10 +337,13 @@ export class SolidlyV3
   }
 
   async addMasterPool(poolKey: string, blockNumber: number): Promise<boolean> {
-    const _pairs = await this.dexHelper.cache.hget(this.dexmapKey, poolKey);
+    const _pairs = await this.dexHelper.cache.hget(
+      PoolsRegistryHashKey,
+      `${this.cacheStateKey}_${poolKey}`,
+    );
     if (!_pairs) {
       this.logger.warn(
-        `did not find poolConfig in for key ${this.dexmapKey} ${poolKey}`,
+        `did not find poolConfig in for key ${PoolsRegistryHashKey} ${this.cacheStateKey}_${poolKey}`,
       );
       return false;
     }
@@ -655,58 +651,6 @@ export class SolidlyV3
     return { address, decimals: 0 };
   }
 
-  async preProcessTransaction(
-    optimalSwapExchange: OptimalSwapExchange<SolidlyV3Data>,
-    srcToken: Token,
-    _0: Token,
-    _1: SwapSide,
-    options: PreprocessTransactionOptions,
-  ): Promise<[OptimalSwapExchange<SolidlyV3Data>, ExchangeTxInfo]> {
-    if (!options.isDirectMethod) {
-      return [
-        optimalSwapExchange,
-        {
-          deadline: BigInt(getLocalDeadlineAsFriendlyPlaceholder()),
-        },
-      ];
-    }
-
-    assert(
-      optimalSwapExchange.data !== undefined,
-      `preProcessTransaction: data field is missing`,
-    );
-
-    let isApproved: boolean | undefined;
-
-    try {
-      this.erc20Contract.options.address =
-        this.dexHelper.config.wrapETH(srcToken).address;
-      const allowance = await this.erc20Contract.methods
-        .allowance(this.augustusAddress, optimalSwapExchange.exchange)
-        .call(undefined, 'latest');
-      isApproved =
-        BigInt(allowance.toString()) >= BigInt(optimalSwapExchange.srcAmount);
-    } catch (e) {
-      this.logger.error(
-        `preProcessTransaction failed to retrieve allowance info: `,
-        e,
-      );
-    }
-
-    return [
-      {
-        ...optimalSwapExchange,
-        data: {
-          ...optimalSwapExchange.data,
-          isApproved,
-        },
-      },
-      {
-        deadline: BigInt(getLocalDeadlineAsFriendlyPlaceholder()),
-      },
-    ];
-  }
-
   async getSimpleParam(
     srcToken: string,
     destToken: string,
@@ -745,6 +689,52 @@ export class SolidlyV3
       swapData,
       data.poolAddress,
     );
+  }
+
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: SolidlyV3Data,
+    side: SwapSide,
+  ): DexExchangeParam {
+    const swapFunction = this.poolIface.getFunction(
+      'swap(address,bool,int256,uint160)',
+    );
+
+    const swapFunctionParams: SolidlyV3SimpleSwapParams = {
+      recipient,
+      zeroForOne: data.zeroForOne,
+      amountSpecified:
+        side === SwapSide.SELL
+          ? srcAmount.toString()
+          : (-destAmount).toString(),
+      sqrtPriceLimitX96: data.zeroForOne
+        ? (TickMath.MIN_SQRT_RATIO + BigInt(1)).toString()
+        : (TickMath.MAX_SQRT_RATIO - BigInt(1)).toString(),
+    };
+    const swapData = this.poolIface.encodeFunctionData(swapFunction, [
+      swapFunctionParams.recipient,
+      swapFunctionParams.zeroForOne,
+      swapFunctionParams.amountSpecified,
+      swapFunctionParams.sqrtPriceLimitX96,
+    ]);
+
+    return {
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: true,
+      exchangeData: swapData,
+      targetExchange: data.poolAddress,
+      returnAmountPos: undefined,
+      ...(side === SwapSide.BUY
+        ? {
+            specialDexSupportsInsertFromAmount: true,
+            specialDexFlag: SpecialDex.BUY_ON_SOLIDLY_V3,
+          }
+        : {}),
+    };
   }
 
   async getTopPoolsForToken(
@@ -851,7 +841,6 @@ export class SolidlyV3
   private _toLowerForAllConfigAddresses() {
     // If new config property will be added, the TS will throw compile error
     const newConfig: DexParams = {
-      quoter: this.config.quoter.toLowerCase(),
       factory: this.config.factory.toLowerCase(),
       supportedTickSpacings: this.config.supportedTickSpacings,
       stateMulticall: this.config.stateMulticall.toLowerCase(),
@@ -925,11 +914,10 @@ export class SolidlyV3
     timeout = 30000,
   ) {
     try {
-      const res = await this.dexHelper.httpRequest.post(
+      const res = await this.dexHelper.httpRequest.querySubgraph(
         this.config.subgraphURL,
         { query, variables },
-        undefined,
-        { timeout: timeout },
+        { timeout },
       );
       return res.data;
     } catch (e) {

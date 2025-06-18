@@ -44,14 +44,52 @@ export const SolidlyV3Config: DexConfigMap<DexParams> = {
   SolidlyV3: {
     [Network.MAINNET]: {
       factory: '0x70Fe4a44EA505cFa3A57b95cF2862D4fd5F0f687',
-      quoter: '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
       supportedTickSpacings: SUPPORTED_TICK_SPACINGS,
       stateMulticall: '0xb229563028302AA693EEaD62F80CC331aEDE4e26',
       chunksCount: 10,
       initRetryFrequency: 10,
       initHash: `0xe9b68c5f77858eecac2e651646e208175e9b1359d68d0e14fc69f8c54e5010bf`,
-      subgraphURL:
-        'https://api.thegraph.com/subgraphs/name/solidlylabs/solidly-v3',
+      subgraphURL: '7StqFFqbxi3jcN5C9YxhRiTxQM8HA8XEHopsynqqxw3t',
+    },
+    [Network.FANTOM]: {
+      factory: '0x70Fe4a44EA505cFa3A57b95cF2862D4fd5F0f687',
+      supportedTickSpacings: SUPPORTED_TICK_SPACINGS,
+      stateMulticall: '0x000c5dd531b3e2327c0E3a382bC8B21a284E6F61',
+      chunksCount: 10,
+      initRetryFrequency: 10,
+      initHash:
+        '0xe9b68c5f77858eecac2e651646e208175e9b1359d68d0e14fc69f8c54e5010bf',
+      subgraphURL: 'HDNu25S2uqr13BHrQdPv2PfTpwxJgPB7QEnC8fsgKcM9',
+    },
+    [Network.BASE]: {
+      factory: '0x70Fe4a44EA505cFa3A57b95cF2862D4fd5F0f687',
+      supportedTickSpacings: SUPPORTED_TICK_SPACINGS,
+      stateMulticall: '0x000c5dd531b3e2327c0E3a382bC8B21a284E6F61',
+      chunksCount: 10,
+      initRetryFrequency: 10,
+      initHash:
+        '0xe9b68c5f77858eecac2e651646e208175e9b1359d68d0e14fc69f8c54e5010bf',
+      subgraphURL: 'C8G1vfqsgWTg4ydzxWdsLj1jCKsxAKFamP5GjuSdRF8W',
+    },
+    [Network.ARBITRUM]: {
+      factory: '0x70Fe4a44EA505cFa3A57b95cF2862D4fd5F0f687',
+      supportedTickSpacings: SUPPORTED_TICK_SPACINGS,
+      stateMulticall: '0x000c5dd531b3e2327c0E3a382bC8B21a284E6F61',
+      chunksCount: 10,
+      initRetryFrequency: 10,
+      initHash:
+        '0xe9b68c5f77858eecac2e651646e208175e9b1359d68d0e14fc69f8c54e5010bf',
+      subgraphURL: 'ALCsbp7jWC6EQjwgicvZkG6dDEFGMV32QUZJvJGqL9Kx',
+    },
+    [Network.OPTIMISM]: {
+      factory: '0x70Fe4a44EA505cFa3A57b95cF2862D4fd5F0f687',
+      supportedTickSpacings: SUPPORTED_TICK_SPACINGS,
+      stateMulticall: '0x000c5dd531b3e2327c0E3a382bC8B21a284E6F61',
+      chunksCount: 10,
+      initRetryFrequency: 10,
+      initHash:
+        '0xe9b68c5f77858eecac2e651646e208175e9b1359d68d0e14fc69f8c54e5010bf',
+      subgraphURL: 'HCThb3gJC45qUYmNEaYmZZTqJW3pSq7X6tb4MqNHEvZf',
     },
   },
 };
@@ -60,5 +98,21 @@ export const Adapters: Record<number, AdapterMappings> = {
   [Network.MAINNET]: {
     [SwapSide.SELL]: [{ name: 'Adapter04', index: 7 }],
     [SwapSide.BUY]: [{ name: 'BuyAdapter02', index: 3 }],
+  },
+  [Network.FANTOM]: {
+    [SwapSide.SELL]: [{ name: 'FantomAdapter02', index: 1 }],
+    [SwapSide.BUY]: [{ name: 'FantomBuyAdapter', index: 5 }],
+  },
+  [Network.BASE]: {
+    [SwapSide.SELL]: [{ name: 'BaseAdapter02', index: 5 }],
+    [SwapSide.BUY]: [{ name: 'BaseBuyAdapter', index: 11 }],
+  },
+  [Network.ARBITRUM]: {
+    [SwapSide.SELL]: [{ name: 'ArbitrumAdapter03', index: 4 }],
+    [SwapSide.BUY]: [{ name: 'ArbitrumBuyAdapter', index: 14 }],
+  },
+  [Network.OPTIMISM]: {
+    [SwapSide.SELL]: [{ name: 'OptimismAdapter02', index: 4 }],
+    [SwapSide.BUY]: [{ name: 'OptimismBuyAdapter', index: 10 }],
   },
 };

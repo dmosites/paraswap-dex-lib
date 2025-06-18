@@ -1,4 +1,5 @@
 import { AbiCoder, Interface } from '@ethersproject/abi';
+import { pack } from '@ethersproject/solidity';
 import _ from 'lodash';
 import { AsyncOrSync, DeepReadonly } from 'ts-essentials';
 import erc20ABI from '../../abi/erc20.json';
@@ -15,6 +16,7 @@ import {
   Token,
   TxInfo,
   TransferFeeParams,
+  DexExchangeParam,
 } from '../../types';
 import {
   UniswapData,
@@ -23,6 +25,9 @@ import {
   UniswapPool,
   UniswapV2Data,
   UniswapV2Functions,
+  UniswapV2FunctionsV6,
+  UniswapV2ParamsDirect,
+  UniswapV2ParamsDirectBase,
   UniswapV2PoolOrderedParams,
 } from './types';
 import { IDex } from '../idex';
@@ -43,6 +48,7 @@ import {
   isETHAddress,
   prependWithOx,
   getBigIntPow,
+  uuidToBytes16,
 } from '../../utils';
 import uniswapV2ABI from '../../abi/uniswap-v2/uniswap-v2-pool.json';
 import uniswapV2factoryABI from '../../abi/uniswap-v2/uniswap-v2-factory.json';
@@ -53,6 +59,10 @@ import { UniswapV2Config, Adapters } from './config';
 import { Uniswapv2ConstantProductPool } from './uniswap-v2-constant-product-pool';
 import { applyTransferFee } from '../../lib/token-transfer-fee';
 import _rebaseTokens from '../../rebase-tokens.json';
+import { Flag, SpecialDex } from '../../executor/types';
+import { hexZeroPad, hexlify, solidityPack, hexConcat } from 'ethers/lib/utils';
+import { BigNumber } from 'ethers';
+import { OnPoolCreatedCallback, UniswapV2Factory } from './uniswap-v2-factory';
 
 const rebaseTokens = _rebaseTokens as { chainId: number; address: string }[];
 
@@ -94,6 +104,11 @@ export const directUniswapFunctionName = [
   UniswapV2Functions.buyOnUniswapFork,
   UniswapV2Functions.swapOnUniswapV2Fork,
   UniswapV2Functions.buyOnUniswapV2Fork,
+];
+
+export const directUniswapFunctionNameV6 = [
+  UniswapV2FunctionsV6.swap,
+  UniswapV2FunctionsV6.buy,
 ];
 
 export interface UniswapV2Pair {
@@ -199,7 +214,7 @@ function encodePools(
 
 export class UniswapV2
   extends SimpleExchange
-  implements IDex<UniswapV2Data, UniswapParam>
+  implements IDex<UniswapV2Data, UniswapParam | UniswapV2ParamsDirect>
 {
   pairs: { [key: string]: UniswapV2Pair } = {};
   feeFactor = 10000;
@@ -207,9 +222,17 @@ export class UniswapV2
 
   routerInterface: Interface;
   exchangeRouterInterface: Interface;
-  static directFunctionName = directUniswapFunctionName;
+
+  needWrapNative = true;
 
   logger: Logger;
+
+  private readonly factoryInst: UniswapV2Factory;
+
+  private newlyCreatedPoolKeys: Set<string> = new Set();
+
+  static directFunctionName = directUniswapFunctionName;
+  static directFunctionNameV6 = directUniswapFunctionNameV6;
 
   readonly hasConstantPriceLargeAmounts = false;
   readonly isFeeOnTransferSupported: boolean = true;
@@ -217,7 +240,7 @@ export class UniswapV2
   readonly DEST_TOKEN_DEX_TRANSFERS = 1;
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
-    getDexKeysWithNetwork(UniswapV2Config);
+    getDexKeysWithNetwork(_.omit(UniswapV2Config, 'PancakeSwapV2'));
 
   constructor(
     protected network: Network,
@@ -241,9 +264,14 @@ export class UniswapV2
     protected router = (UniswapV2Config[dexKey] &&
       UniswapV2Config[dexKey][network].router) ??
       dexHelper.config.data.uniswapV2ExchangeRouterAddress,
+    protected subgraphType:
+      | 'subgraphs'
+      | 'deployments'
+      | undefined = UniswapV2Config[dexKey] &&
+      UniswapV2Config[dexKey][network].subgraphType,
   ) {
     super(dexHelper, dexKey);
-    this.logger = dexHelper.getLogger(dexKey);
+    this.logger = dexHelper.getLogger(`${dexKey}-${network}`);
 
     this.factory = new dexHelper.web3Provider.eth.Contract(
       uniswapV2factoryABI as any,
@@ -252,6 +280,19 @@ export class UniswapV2
 
     this.routerInterface = new Interface(ParaSwapABI);
     this.exchangeRouterInterface = new Interface(UniswapV2ExchangeRouterABI);
+
+    this.factoryInst = new UniswapV2Factory(
+      dexHelper,
+      dexKey,
+      factoryAddress,
+      this.logger,
+      this.onPoolCreatedDeleteFromNonExistingSet,
+    );
+  }
+
+  async initializePricing(blockNumber: number) {
+    // Init listening to new pools creation
+    await this.factoryInst.initialize(blockNumber);
   }
 
   // getFeesMultiCallData should be override
@@ -344,14 +385,17 @@ export class UniswapV2
         ? [from, to]
         : [to, from];
 
-    const key = `${token0.address.toLowerCase()}-${token1.address.toLowerCase()}`;
+    const key = this.getPoolIdentifier(token0.address, token1.address);
     let pair = this.pairs[key];
     if (pair) return pair;
     const exchange = await this.factory.methods
       .getPair(token0.address, token1.address)
       .call();
     if (exchange === NULL_ADDRESS) {
-      pair = { token0, token1 };
+      // if the pool has been newly created to not allow this op as we can run into race condition between pool discovery and concurrent pricing request touching this pool
+      if (!this.newlyCreatedPoolKeys.has(key)) {
+        pair = { token0, token1 };
+      }
     } else {
       pair = { token0, token1, exchange };
     }
@@ -508,12 +552,7 @@ export class UniswapV2
       return [];
     }
 
-    const tokenAddress = [from.address.toLowerCase(), to.address.toLowerCase()]
-      .sort((a, b) => (a > b ? 1 : -1))
-      .join('_');
-
-    const poolIdentifier = `${this.dexKey}_${tokenAddress}`;
-    return [poolIdentifier];
+    return [this.getPoolIdentifier(from.address, to.address)];
   }
 
   async getPricesVolume(
@@ -539,14 +578,7 @@ export class UniswapV2
         return null;
       }
 
-      const tokenAddress = [
-        from.address.toLowerCase(),
-        to.address.toLowerCase(),
-      ]
-        .sort((a, b) => (a > b ? 1 : -1))
-        .join('_');
-
-      const poolIdentifier = `${this.dexKey}_${tokenAddress}`;
+      const poolIdentifier = this.getPoolIdentifier(from.address, to.address);
 
       if (limitPools && limitPools.every(p => p !== poolIdentifier))
         return null;
@@ -651,7 +683,7 @@ export class UniswapV2
   }
 
   getAdapters(side: SwapSide): { name: string; index: number }[] | null {
-    return this.adapters[side];
+    return this.adapters?.[side] ?? null;
   }
 
   async getTopPoolsForToken(
@@ -661,7 +693,7 @@ export class UniswapV2
     if (!this.subgraphURL) return [];
     const query = `
       query ($token: Bytes!, $count: Int) {
-        pools0: pairs(first: $count, orderBy: reserveUSD, orderDirection: desc, where: {token0: $token, reserve0_gt: 1, reserve1_gt: 1}) {
+        pools0: pairs(first: $count, orderBy: reserveUSD, orderDirection: desc, where: {token0: $token, reserve0_gt: 0.0001, reserve1_gt: 0.0001}) {
         id
         token0 {
           id
@@ -673,7 +705,7 @@ export class UniswapV2
         }
         reserveUSD
       }
-      pools1: pairs(first: $count, orderBy: reserveUSD, orderDirection: desc, where: {token1: $token, reserve0_gt: 1, reserve1_gt: 1}) {
+      pools1: pairs(first: $count, orderBy: reserveUSD, orderDirection: desc, where: {token1: $token, reserve0_gt: 0.0001, reserve1_gt: 0.0001}) {
         id
         token0 {
           id
@@ -687,13 +719,13 @@ export class UniswapV2
       }
     }`;
 
-    const { data } = await this.dexHelper.httpRequest.post(
+    const { data } = await this.dexHelper.httpRequest.querySubgraph(
       this.subgraphURL,
       {
         query,
         variables: { token: tokenAddress.toLowerCase(), count },
       },
-      SUBGRAPH_TIMEOUT,
+      { timeout: SUBGRAPH_TIMEOUT, type: this.subgraphType },
     );
 
     if (!(data && data.pools0 && data.pools1))
@@ -701,6 +733,7 @@ export class UniswapV2
     const pools0 = _.map(data.pools0, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
+      poolIdentifier: this.getPoolIdentifier(pool.token0.id, pool.token1.id),
       connectorTokens: [
         {
           address: pool.token1.id.toLowerCase(),
@@ -713,6 +746,7 @@ export class UniswapV2
     const pools1 = _.map(data.pools1, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
+      poolIdentifier: this.getPoolIdentifier(pool.token0.id, pool.token1.id),
       connectorTokens: [
         {
           address: pool.token0.id.toLowerCase(),
@@ -821,6 +855,78 @@ export class UniswapV2
     );
   }
 
+  // TODO: Rebase tokens handling?
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: UniswapData,
+    side: SwapSide,
+  ): DexExchangeParam {
+    const pools = encodePools(data.pools, this.feeFactor);
+
+    let exchangeData: string;
+    let specialDexFlag: SpecialDex;
+    let transferSrcTokenBeforeSwap: Address | undefined;
+    let targetExchange: Address;
+    let dexFuncHasRecipient: boolean;
+
+    // if (this.dexKey === 'BakerySwap') {
+    //   const weth = this.getWETHAddress(srcToken, destToken, data.weth);
+
+    //   exchangeData = this.exchangeRouterInterface.encodeFunctionData(
+    //     UniswapV2Functions.swap,
+    //     [srcToken, srcAmount, destAmount, weth, pools],
+    //   );
+    //   specialDexFlag = SpecialDex.DEFAULT;
+    //   targetExchange = data.router;
+    //   dexFuncHasRecipient = false;
+    // } else if (side === SwapSide.SELL) {
+
+    if (side === SwapSide.SELL) {
+      // 28 bytes are prepended in the Bytecode builder
+      const exchangeDataTypes = ['bytes4', 'bytes32', 'bytes32'];
+      const exchangeDataToPack = [
+        hexZeroPad(hexlify(0), 4),
+        hexZeroPad(hexlify(data.pools.length), 32), // pool count
+        hexZeroPad(hexlify(BigNumber.from(srcAmount)), 32),
+      ];
+      pools.forEach(pool => {
+        exchangeDataTypes.push('bytes32');
+        exchangeDataToPack.push(hexZeroPad(hexlify(BigNumber.from(pool)), 32));
+      });
+
+      exchangeData = solidityPack(exchangeDataTypes, exchangeDataToPack);
+      specialDexFlag = SpecialDex.SWAP_ON_UNISWAP_V2_FORK;
+      transferSrcTokenBeforeSwap = data.pools[0].address;
+      targetExchange = recipient;
+      dexFuncHasRecipient = true;
+    } else {
+      const weth = this.getWETHAddress(srcToken, destToken, data.weth);
+
+      exchangeData = this.exchangeRouterInterface.encodeFunctionData(
+        UniswapV2Functions.buy,
+        [srcToken, srcAmount, destAmount, weth, pools],
+      );
+      specialDexFlag = SpecialDex.DEFAULT;
+      targetExchange = data.router;
+      dexFuncHasRecipient = false;
+    }
+
+    return {
+      needWrapNative: this.needWrapNative,
+      specialDexSupportsInsertFromAmount: true,
+      dexFuncHasRecipient,
+      exchangeData,
+      targetExchange,
+      specialDexFlag,
+      transferSrcTokenBeforeSwap,
+      returnAmountPos: undefined,
+    };
+  }
+
   // TODO: Move to new uniswapv2&forks router interface
   getDirectParam(
     srcToken: Address,
@@ -836,7 +942,7 @@ export class UniswapV2
     deadline: NumberAsString,
     partner: string,
     beneficiary: string,
-    contractMethod?: string,
+    contractMethod: string,
   ): TxInfo<UniswapParam> {
     if (!contractMethod) throw new Error(`contractMethod need to be passed`);
     if (permit !== '0x') contractMethod += 'WithPermit';
@@ -897,5 +1003,154 @@ export class UniswapV2
 
   static getDirectFunctionName(): string[] {
     return this.directFunctionName;
+  }
+
+  getDirectParamV6(
+    srcToken: Address,
+    destToken: Address,
+    fromAmount: NumberAsString,
+    toAmount: NumberAsString,
+    quotedAmount: NumberAsString,
+    data: UniswapV2Data,
+    side: SwapSide,
+    permit: string,
+    uuid: string,
+    partnerAndFee: string,
+    beneficiary: string,
+    blockNumber: number,
+    contractMethod: string,
+  ) {
+    if (!contractMethod) throw new Error(`contractMethod need to be passed`);
+    if (!UniswapV2.getDirectFunctionNameV6().includes(contractMethod!)) {
+      throw new Error(`Invalid contract method ${contractMethod}`);
+    }
+
+    const { path, pools } = data;
+    const length = path.length;
+    const encodedPath = path.reduce((acc, _, i) => {
+      if (i >= length - 1) return acc;
+
+      const p = this._encodePathV6(
+        {
+          srcToken: path[i],
+          destToken: path[i + 1],
+          direction: pools[i].direction,
+        },
+        side,
+        data.wethAddress,
+      ).replace('0x', '');
+
+      return acc + p;
+    }, '0x');
+
+    const metadata = hexConcat([
+      hexZeroPad(uuidToBytes16(uuid), 16),
+      hexZeroPad(hexlify(blockNumber), 16),
+    ]);
+
+    const uniData: UniswapV2ParamsDirectBase = [
+      srcToken,
+      destToken,
+      fromAmount,
+      toAmount,
+      quotedAmount,
+      metadata,
+      beneficiary,
+      encodedPath,
+    ];
+
+    const swapParams: UniswapV2ParamsDirect = [uniData, partnerAndFee, permit];
+
+    const encoder = (...params: (string | UniswapV2ParamsDirect)[]) => {
+      return this.augustusV6Interface.encodeFunctionData(
+        side === SwapSide.SELL
+          ? UniswapV2FunctionsV6.swap
+          : UniswapV2FunctionsV6.buy,
+        [...params],
+      );
+    };
+
+    return {
+      params: swapParams,
+      encoder,
+      networkFee: '0',
+    };
+  }
+
+  static getDirectFunctionNameV6(): string[] {
+    return this.directFunctionNameV6;
+  }
+
+  protected getPoolIdentifier(token0: string, token1: string) {
+    const [_token0, _token1] =
+      token0.toLowerCase() < token1.toLowerCase()
+        ? [token0, token1]
+        : [token1, token0];
+
+    return `${this.dexKey}_${_token0}_${_token1}`.toLowerCase();
+  }
+
+  private onPoolCreatedDeleteFromNonExistingSet: OnPoolCreatedCallback =
+    async ({ token0, token1 }) => {
+      const logPrefix = '[onPoolCreatedDeleteFromNonExistingSet]';
+
+      try {
+        const poolKey = this.getPoolIdentifier(token0, token1);
+
+        this.newlyCreatedPoolKeys.add(poolKey);
+
+        // delete entry locally to let local instance discover the pool
+        delete this.pairs[poolKey];
+
+        this.logger.info(`${logPrefix} discovered new pool ${poolKey}`);
+      } catch (e) {
+        this.logger.error(
+          `${logPrefix} LOGIC ERROR on ack new pool (token0=${token0},token1=${token1})`,
+          e,
+        );
+      }
+    };
+
+  // univ2 always had 1 pool per pair
+  private _encodePathV6(
+    path: {
+      srcToken: Address;
+      destToken: Address;
+      direction: boolean;
+    },
+    side: SwapSide,
+    weth?: Address,
+  ): string {
+    if (path == null) {
+      this.logger.error(
+        `${this.dexKey}: Received invalid path=${path} for side=${side} to encode`,
+      );
+      return '0x';
+    }
+
+    // v6 expects weth for eth in pools
+    if (isETHAddress(path.srcToken)) {
+      path.srcToken =
+        weth || this.dexHelper.config.data.wrappedNativeTokenAddress;
+    }
+
+    if (isETHAddress(path.destToken)) {
+      path.destToken =
+        weth || this.dexHelper.config.data.wrappedNativeTokenAddress;
+    }
+
+    // contract expects tokens to be sorted, and direction switched in case sorting changes src/dest order
+    const [srcTokenSorted, destTokenSorted] =
+      BigInt(path.srcToken) > BigInt(path.destToken)
+        ? [path.destToken, path.srcToken]
+        : [path.srcToken, path.destToken];
+
+    const direction = srcTokenSorted === path.srcToken ? 1 : 0;
+
+    const tokensEncoded = pack(
+      ['address', 'address'],
+      [srcTokenSorted, destTokenSorted],
+    );
+    return tokensEncoded + '0'.repeat(47) + direction;
   }
 }

@@ -4,6 +4,7 @@ import { Address } from '../../types';
 import { AbiItem } from 'web3-utils';
 import { MultiResult } from '../../lib/multi-wrapper';
 import { UniswapV3EventPool } from './uniswap-v3-pool';
+import { UniswapV3Factory } from './uniswap-v3-factory';
 
 export type OracleObservation = {
   blockTimestamp: bigint;
@@ -36,6 +37,7 @@ export type Slot0 = {
 };
 
 export type PoolState = {
+  networkId: number;
   pool: string;
   blockTimestamp: bigint;
   tickSpacing: bigint;
@@ -71,19 +73,23 @@ export type DecodeStateMultiCallFunc = (
 ) => DecodedStateMultiCallResultWithRelativeBitmaps;
 
 export type DexParams = {
+  subgraphType?: 'subgraphs' | 'deployments';
   router: Address;
   quoter: Address;
   factory: Address;
   stateMulticall: Address;
   uniswapMulticall: Address;
   supportedFees: bigint[];
+  tickSpacings?: bigint[];
+  tickSpacingsToFees?: { [key: string]: bigint };
   chunksCount: number;
   initRetryFrequency: number;
   deployer?: Address;
-  subgraphURL: string;
+  subgraphURL?: string;
   initHash: string;
   stateMultiCallAbi?: AbiItem[];
   eventPoolImplementation?: typeof UniswapV3EventPool;
+  factoryImplementation?: typeof UniswapV3Factory;
   decodeStateMultiCallResultWithRelativeBitmaps?: DecodeStateMultiCallFunc;
 };
 
@@ -122,6 +128,23 @@ export type UniswapV3Param = [
   path: string,
   permit: string,
   uuid: string,
+];
+
+export type UniswapV3ParamsDirectBase = [
+  srcToken: Address,
+  destToken: Address,
+  fromAmount: NumberAsString,
+  toAmount: NumberAsString,
+  quotedAmount: NumberAsString,
+  metadata: string,
+  beneficiary: Address,
+  pools: string,
+];
+
+export type UniswapV3ParamsDirect = [
+  params: UniswapV3ParamsDirectBase,
+  partnerAndFee: string,
+  permit: string,
 ];
 
 export enum UniswapV3Functions {

@@ -1,10 +1,11 @@
 import { AsyncOrSync, DeepReadonly } from 'ts-essentials';
 import { Interface } from '@ethersproject/abi';
-import { SwapSide } from '@paraswap/core';
+import { NumberAsString, SwapSide } from '@paraswap/core';
 
 import {
   AdapterExchangeParam,
   Address,
+  DexExchangeParam,
   ExchangePrices,
   Logger,
   PoolLiquidity,
@@ -31,6 +32,7 @@ import { WombatBmw } from './wombat-bmw';
 import { fromWad } from './utils';
 import { WombatPool } from './wombat-pool';
 import { StatePollingManager } from '../../lib/stateful-rpc-poller/state-polling-manager';
+import { extractReturnAmountPosition } from '../../executor/utils';
 
 export class Wombat extends SimpleExchange implements IDex<WombatData> {
   // contract interfaces
@@ -311,62 +313,42 @@ export class Wombat extends SimpleExchange implements IDex<WombatData> {
     );
   }
 
-  // This is called once before getTopPoolsForToken is
-  // called for multiple tokens. This can be helpful to
-  // update common state required for calculating
-  // getTopPoolsForToken. For example, poolLiquidityUSD.
-  async updatePoolState(): Promise<void> {
-    const blockNumber = await this.dexHelper.provider.getBlockNumber();
-    await this.init(blockNumber);
-    const bmwState = this.bmw.getState(blockNumber);
-    if (!bmwState) {
-      throw new Error('updatePoolState: bmwState still null after init');
-    }
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: WombatData,
+    side: SwapSide,
+  ): DexExchangeParam {
+    if (side === SwapSide.BUY) throw new Error(`Buy not supported`);
+    const { exchange } = data;
 
-    // All tokens are USD stablecoins so to estimate liquidity can just add
-    // the cash balances of all the tokens
-    const poolLiquidityUSD: { [poolAddress: string]: number } = {};
-    const usdPromises = [];
-    const poolStates: { [poolAddress: string]: DeepReadonly<PoolState> } = {};
-    const poolStateObjs = await Promise.all(
-      Object.values(this.pools).map(pool => pool.getState(blockNumber)),
-    );
+    // Encode here the transaction arguments
+    const swapData = Wombat.poolInterface.encodeFunctionData('swap', [
+      srcToken,
+      destToken,
+      srcAmount,
+      destAmount,
+      recipient,
+      getLocalDeadlineAsFriendlyPlaceholder(),
+    ]);
 
-    for (const [poolAddress, _] of Object.entries(this.pools)) {
-      const index = Object.keys(this.pools).indexOf(poolAddress);
-      let state = poolStateObjs[index];
-      if (!state) {
-        this.logger.warn(
-          `State of ${poolAddress} is null in updatePoolState, skipping...`,
-        );
-        continue;
-      }
-      poolStates[poolAddress] = state;
-      for (const [tokenAddress, assetState] of Object.entries(state.asset)) {
-        usdPromises.push(
-          this.dexHelper.getTokenUSDPrice(
-            {
-              address: tokenAddress,
-              decimals: assetState.underlyingTokenDecimals,
-            },
-            fromWad(
-              assetState.cash,
-              BigInt(assetState.underlyingTokenDecimals),
-            ),
-          ),
-        );
-      }
-    }
-    const usdValues = await Promise.all(usdPromises);
-
-    for (const [poolAddress, poolState] of Object.entries(poolStates)) {
-      poolLiquidityUSD[poolAddress] = 0;
-      for (let i = 0; i < poolState.underlyingAddresses.length; i++) {
-        poolLiquidityUSD[poolAddress] += usdValues[i];
-      }
-    }
-
-    this.poolLiquidityUSD = poolLiquidityUSD;
+    return {
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: true,
+      exchangeData: swapData,
+      targetExchange: exchange,
+      returnAmountPos:
+        side === SwapSide.SELL
+          ? extractReturnAmountPosition(
+              Wombat.poolInterface,
+              'swap',
+              'actualToAmount',
+            )
+          : undefined,
+    };
   }
 
   // Returns list of top pools based on liquidity. Max

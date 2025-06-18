@@ -1,3 +1,5 @@
+import { Network } from '../../constants';
+
 export const UNISWAPV3_TICK_GAS_COST = 24_000; // Ceiled
 export const UNISWAPV3_TICK_BASE_OVERHEAD = 75_000;
 export const UNISWAPV3_POOL_SEARCH_OVERHEAD = 10_000;
@@ -8,10 +10,18 @@ export const TICK_BITMAP_TO_USE = 4n;
 // This is used to check if the state is still valid.
 export const TICK_BITMAP_BUFFER = 8n;
 
+export const TICK_BITMAP_TO_USE_BY_CHAIN: Record<number, bigint> = {
+  [Network.MAINNET]: 8n,
+};
+
+export const TICK_BITMAP_BUFFER_BY_CHAIN: Record<number, bigint> = {
+  [Network.MAINNET]: 16n,
+};
+
 export const MAX_PRICING_COMPUTATION_STEPS_ALLOWED = 128;
 
 export const UNISWAPV3_SUBGRAPH_URL =
-  'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3';
+  '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
 
 export const UNISWAPV3_EFFICIENCY_FACTOR = 3;
 
@@ -39,3 +49,10 @@ export enum DirectMethods {
   directSell = 'directUniV3Swap',
   directBuy = 'directUniV3Buy',
 }
+
+export enum DirectMethodsV6 {
+  directSell = 'swapExactAmountInOnUniswapV3',
+  directBuy = 'swapExactAmountOutOnUniswapV3',
+}
+
+export const INACTIVE_POOL_AGE_MS = 3 * 30 * 24 * 60 * 60 * 1000; // 3 months

@@ -22,6 +22,9 @@ import {
   OUT_OF_RANGE_ERROR_POSTFIX,
   TICK_BITMAP_BUFFER,
   TICK_BITMAP_TO_USE,
+  TICK_BITMAP_TO_USE_BY_CHAIN,
+  TICK_BITMAP_BUFFER_BY_CHAIN,
+  INACTIVE_POOL_AGE_MS,
 } from './constants';
 import { TickBitMap } from './contract-math/TickBitMap';
 import { uint256ToBigInt } from '../../lib/decoders';
@@ -72,15 +75,14 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
     logger: Logger,
     mapKey: string = '',
     readonly poolInitCodeHash: string,
+    public readonly tickSpacing?: bigint,
   ) {
-    super(
-      parentName,
-      `${token0}_${token1}_${feeCode}`,
-      dexHelper,
-      logger,
-      true,
-      mapKey,
-    );
+    let poolKey = `${token0}_${token1}_${feeCode}`;
+    if (tickSpacing !== undefined) {
+      poolKey = `${poolKey}_${tickSpacing}`;
+    }
+
+    super(parentName, poolKey, dexHelper, logger, true, mapKey);
     this.feeCodeAsString = feeCode.toString();
     this.token0 = token0.toLowerCase();
     this.token1 = token1.toLowerCase();
@@ -122,6 +124,15 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
     options?: InitializeStateOptions<PoolState>,
   ) {
     await super.initialize(blockNumber, options);
+  }
+
+  protected getPoolIdentifierData() {
+    return {
+      token0: this.token0,
+      token1: this.token1,
+      fee: this.feeCode,
+      tickSpacing: this.tickSpacing,
+    };
   }
 
   protected async processBlockLogs(
@@ -243,7 +254,41 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
   }
 
   getBitmapRangeToRequest() {
-    return TICK_BITMAP_TO_USE + TICK_BITMAP_BUFFER;
+    const networkId = this.dexHelper.config.data.network;
+
+    const tickBitMapToUse =
+      TICK_BITMAP_TO_USE_BY_CHAIN[networkId] ?? TICK_BITMAP_TO_USE;
+    const tickBitMapBuffer =
+      TICK_BITMAP_BUFFER_BY_CHAIN[networkId] ?? TICK_BITMAP_BUFFER;
+
+    return tickBitMapToUse + tickBitMapBuffer;
+  }
+
+  async checkState(
+    blockNumber: number,
+  ): Promise<DeepReadonly<PoolState> | null> {
+    const state = this.getState(blockNumber);
+    if (state) {
+      return state;
+    }
+
+    this.logger.error(
+      `UniV3: No state found for ${this.name} ${this.addressesSubscribed[0]} for bn: ${blockNumber}`,
+    );
+    return null;
+  }
+
+  _setState(state: any, blockNumber: number, reason?: string): void {
+    // if (this.parentName === 'UniswapV3') {
+    // this.logger.info(
+    //   `UniV3: Setting state: '${!!state ? 'non-empty' : 'empty'}' for '${
+    //     this.name
+    //   }' for bn: '${blockNumber}' due to reason: '${
+    //     reason ?? 'outside_of_event_subscriber'
+    //   }'`,
+    // );
+    // }
+    super._setState(state, blockNumber);
   }
 
   async generateState(blockNumber: number): Promise<Readonly<PoolState>> {
@@ -271,6 +316,11 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
       resState.returnData,
     ] as [bigint, bigint, DecodedStateMultiCallResultWithRelativeBitmaps];
 
+    const inactiveTimestampMs = Date.now() - INACTIVE_POOL_AGE_MS;
+    const isActive =
+      inactiveTimestampMs < _state.observation.blockTimestamp * 1000;
+    assert(isActive, 'Pool is inactive');
+
     const tickBitmap = {};
     const ticks = {};
 
@@ -295,6 +345,7 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
     const requestedRange = this.getBitmapRangeToRequest();
 
     return {
+      networkId: this.dexHelper.config.data.network,
       pool: _state.pool,
       blockTimestamp: bigIntify(_state.blockTimestamp),
       slot0: {
@@ -495,7 +546,7 @@ export class UniswapV3EventPool extends StatefulEventSubscriber<PoolState> {
     return pool;
   }
 
-  private _computePoolAddress(
+  protected _computePoolAddress(
     token0: Address,
     token1: Address,
     fee: bigint,

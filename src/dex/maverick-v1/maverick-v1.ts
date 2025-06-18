@@ -9,6 +9,7 @@ import {
   SimpleExchangeParam,
   PoolLiquidity,
   Logger,
+  DexExchangeParam,
 } from '../../types';
 import { SwapSide, Network } from '../../constants';
 import { getDexKeysWithNetwork, getBigIntPow, isTruthy } from '../../utils';
@@ -39,6 +40,10 @@ import {
 } from './subgraph-queries';
 import { SUBGRAPH_TIMEOUT } from '../../constants';
 import RouterABI from '../../abi/maverick-v1/router.json';
+import { NumberAsString } from '@paraswap/core';
+import { extractReturnAmountPosition } from '../../executor/utils';
+import { uint256ToBigInt } from '../../lib/decoders';
+import { MultiCallParams } from '../../lib/multi-wrapper';
 
 const MAX_POOL_CNT = 1000;
 
@@ -135,10 +140,10 @@ export class MaverickV1
     this.logger.info(
       `Fetching ${this.dexKey}_${this.network} Pools from subgraph`,
     );
-    const { data } = await this.dexHelper.httpRequest.post(
+    const { data } = await this.dexHelper.httpRequest.querySubgraph(
       this.subgraphURL,
-      { query: fetchAllPools, count: MAX_POOL_CNT },
-      SUBGRAPH_TIMEOUT,
+      { query: fetchAllPools, variables: { count: MAX_POOL_CNT } },
+      { timeout: SUBGRAPH_TIMEOUT },
     );
     return data.pools;
   }
@@ -354,6 +359,63 @@ export class MaverickV1
     };
   }
 
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: MaverickV1Data,
+    side: SwapSide,
+  ): DexExchangeParam {
+    const swapFunction =
+      side === SwapSide.SELL
+        ? MaverickV1Functions.exactInputSingle
+        : MaverickV1Functions.exactOutputSingle;
+
+    const swapFunctionParams: MaverickV1Param =
+      side === SwapSide.SELL
+        ? {
+            recipient,
+            deadline: getLocalDeadlineAsFriendlyPlaceholder(),
+            amountIn: srcAmount,
+            amountOutMinimum: destAmount,
+            tokenIn: srcToken,
+            tokenOut: destToken,
+            pool: data.pool,
+            sqrtPriceLimitD18: '0',
+          }
+        : {
+            recipient,
+            deadline: getLocalDeadlineAsFriendlyPlaceholder(),
+            amountOut: destAmount,
+            amountInMaximum: srcAmount,
+            tokenIn: srcToken,
+            tokenOut: destToken,
+            pool: data.pool,
+            sqrtPriceLimitD18: '0',
+          };
+
+    const exchangeData = this.routerIface.encodeFunctionData(swapFunction, [
+      swapFunctionParams,
+    ]);
+
+    return {
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: true,
+      exchangeData,
+      targetExchange: this.config.routerAddress,
+      returnAmountPos:
+        side === SwapSide.SELL
+          ? extractReturnAmountPosition(
+              this.routerIface,
+              MaverickV1Functions.exactInputSingle,
+              'amountOut',
+            )
+          : undefined,
+    };
+  }
+
   async getSimpleParam(
     srcToken: string,
     destToken: string,
@@ -411,11 +473,10 @@ export class MaverickV1
     timeout = 30000,
   ) {
     try {
-      const res = await this.dexHelper.httpRequest.post(
+      const res = await this.dexHelper.httpRequest.querySubgraph(
         this.subgraphURL,
         { query, variables },
-        undefined,
-        { timeout: timeout },
+        { timeout },
       );
       return res.data;
     } catch (e) {
@@ -443,7 +504,7 @@ export class MaverickV1
       return [];
     }
 
-    const pools0 = _.map(res.pools0, pool => ({
+    const pools0: PoolLiquidity[] = _.map(res.pools0, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
       connectorTokens: [
@@ -452,10 +513,10 @@ export class MaverickV1
           decimals: parseInt(pool.tokenB.decimals),
         },
       ],
-      liquidityUSD: parseFloat(pool.balanceUSD) * EFFICIENCY_FACTOR,
+      liquidityUSD: parseFloat(pool.balanceUSD),
     }));
 
-    const pools1 = _.map(res.pools1, pool => ({
+    const pools1: PoolLiquidity[] = _.map(res.pools1, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
       connectorTokens: [
@@ -464,14 +525,107 @@ export class MaverickV1
           decimals: parseInt(pool.tokenA.decimals),
         },
       ],
-      liquidityUSD: parseFloat(pool.balanceUSD) * EFFICIENCY_FACTOR,
+      liquidityUSD: parseFloat(pool.balanceUSD),
     }));
 
-    const pools = _.slice(
-      _.sortBy(_.concat(pools0, pools1), [pool => -1 * pool.liquidityUSD]),
-      0,
-      limit,
+    const allPools = pools0.concat(pools1);
+
+    if (allPools.length === 0) {
+      return [];
+    }
+
+    const poolBalances = await this._getPoolBalances(
+      allPools.map(p => [
+        p.address,
+        tokenAddress,
+        p.connectorTokens[0].address,
+      ]),
     );
-    return pools;
+
+    const tokensAmounts = allPools
+      .map((p, i) => {
+        return [
+          [tokenAddress, poolBalances[i][0]],
+          [p.connectorTokens[0].address, poolBalances[i][1]],
+        ] as [string, bigint | null][];
+      })
+      .flat();
+
+    const poolUsdBalances = await this.dexHelper.getUsdTokenAmounts(
+      tokensAmounts,
+    );
+
+    const pools = allPools.map((pool, i) => {
+      const tokenUsdBalance = poolUsdBalances[i * 2];
+      const connectorTokenUsdBalance = poolUsdBalances[i * 2 + 1];
+
+      let tokenUsdLiquidity = null;
+
+      if (tokenUsdBalance) {
+        tokenUsdLiquidity = tokenUsdBalance * EFFICIENCY_FACTOR;
+      }
+
+      let connectorTokenUsdLiquidity = null;
+
+      if (connectorTokenUsdBalance) {
+        connectorTokenUsdLiquidity =
+          connectorTokenUsdBalance * EFFICIENCY_FACTOR;
+      }
+
+      if (tokenUsdLiquidity) {
+        pool.connectorTokens[0] = {
+          ...pool.connectorTokens[0],
+          liquidityUSD: tokenUsdLiquidity,
+        };
+      }
+
+      const liquidityUSD = connectorTokenUsdLiquidity || tokenUsdLiquidity || 0;
+
+      return {
+        ...pool,
+        liquidityUSD,
+      };
+    });
+
+    return pools
+      .sort((a, b) => b.liquidityUSD - a.liquidityUSD)
+      .slice(0, limit);
+  }
+
+  private async _getPoolBalances(
+    pools: [pool: string, token0: string, token1: string][],
+  ): Promise<[balanceToken0: bigint | null, balanceToken1: bigint | null][]> {
+    const callData: MultiCallParams<bigint>[] = pools
+      .map(pool => [
+        {
+          target: pool[1],
+          callData: this.erc20Interface.encodeFunctionData('balanceOf', [
+            pool[0],
+          ]),
+          decodeFunction: uint256ToBigInt,
+        },
+        {
+          target: pool[2],
+          callData: this.erc20Interface.encodeFunctionData('balanceOf', [
+            pool[0],
+          ]),
+          decodeFunction: uint256ToBigInt,
+        },
+      ])
+      .flat();
+
+    const balanceOfCalls =
+      await this.dexHelper.multiWrapper.tryAggregate<bigint>(false, callData);
+
+    const balances: [bigint | null, bigint | null][] = [];
+    for (let i = 0; i < balanceOfCalls.length; i += 2) {
+      const balanceToken0 = balanceOfCalls[i];
+      const balanceToken1 = balanceOfCalls[i + 1];
+      balances.push([
+        balanceToken0.success ? balanceToken0.returnData : null,
+        balanceToken1.success ? balanceToken1.returnData : null,
+      ]);
+    }
+    return balances;
   }
 }

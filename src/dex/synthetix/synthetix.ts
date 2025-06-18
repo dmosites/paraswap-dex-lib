@@ -9,6 +9,8 @@ import {
   SimpleExchangeParam,
   PoolLiquidity,
   Logger,
+  NumberAsString,
+  DexExchangeParam,
 } from '../../types';
 import { SwapSide, Network } from '../../constants';
 import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
@@ -29,6 +31,7 @@ import { SynthetixState } from './synthetix-state';
 // There are so many ABIs, where I need only one or two functions
 // So, I decided to unite them into one combined interface
 import CombinedSynthetixABI from '../../abi/synthetix/CombinedSynthetix.abi.json';
+import { extractReturnAmountPosition } from '../../executor/utils';
 
 export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
   readonly hasConstantPriceLargeAmounts = false;
@@ -42,7 +45,7 @@ export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
   synthetixState: SynthetixState;
 
   // It is intermediate measure before we have event base Oracles
-  statePollingTimer?: NodeJS.Timer;
+  statePollingTimer?: NodeJS.Timeout;
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(SynthetixConfig);
@@ -195,6 +198,7 @@ export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
 
       if (
         state.isSystemSuspended ||
+        state.isExchangeSuspended ||
         state.areSynthsSuspended[_srcAddress] ||
         state.areSynthsSuspended[_destAddress]
       ) {
@@ -322,17 +326,60 @@ export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
     );
   }
 
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: SynthetixData,
+    side: SwapSide,
+  ): DexExchangeParam {
+    if (side === SwapSide.BUY) throw new Error(`Buy not supported`);
+
+    const { exchange, srcKey, destKey } = data;
+
+    const swapData =
+      this.network === Network.OPTIMISM
+        ? this.combinedIface.encodeFunctionData('exchange', [
+            srcKey,
+            srcAmount,
+            destKey,
+          ])
+        : this.combinedIface.encodeFunctionData('exchangeAtomically', [
+            srcKey,
+            srcAmount,
+            destKey,
+            this.config.trackingCode,
+            '1',
+          ]);
+
+    return {
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: false,
+      exchangeData: swapData,
+      targetExchange: exchange,
+      returnAmountPos:
+        side === SwapSide.SELL
+          ? extractReturnAmountPosition(
+              this.combinedIface,
+              this.network === Network.OPTIMISM
+                ? 'exchange'
+                : 'exchangeAtomically',
+              'amountReceived',
+            )
+          : undefined,
+    };
+  }
+
   async updatePoolState(): Promise<void> {
     try {
-      this.synthetixState.onchainConfigValues;
+      await this.synthetixState.updateOnchainConfigValues();
     } catch (e) {
-      if (
-        e instanceof Error &&
-        e.message.endsWith('onchain config values are not initialized')
-      ) {
-        await this.synthetixState.updateOnchainConfigValues();
-        return;
-      }
+      this.logger.error(
+        `${this.dexKey}: Failed to update onchain config values: `,
+        e,
+      );
       throw e;
     }
   }
@@ -347,6 +394,14 @@ export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
       return [];
     }
 
+    if (
+      this.onchainConfigValues.isSystemSuspended ||
+      this.onchainConfigValues.isExchangeSuspended ||
+      this.onchainConfigValues.areSynthsSuspended[_tokenAddress]
+    ) {
+      return [];
+    }
+
     return [
       {
         exchange: this.dexKey,
@@ -354,7 +409,10 @@ export class Synthetix extends SimpleExchange implements IDex<SynthetixData> {
         connectorTokens: this.config.synths.filter(
           s => s.address !== _tokenAddress,
         ),
-        liquidityUSD: this.onchainConfigValues.liquidityEstimationInUSD,
+        // liquidityUSD: this.onchainConfigValues.liquidityEstimationInUSD,
+        // current supply is around 20-40m USD which is not how much we can trade
+        // so use low hardcoded value
+        liquidityUSD: 100_000,
       },
     ];
   }
