@@ -438,6 +438,8 @@ const baseConfigs: { [network: number]: BaseConfig } = {
     forceRpcFallbackDexs: [],
     uniswapV2ExchangeRouterAddress:
       '0xfa39c1c670b48956eeF9fd0BbD0E81A290326330',
+    airSwapOverrideServerURLs:
+      process.env[`AIRSWAP_SERVER_URLS_100`]?.split(',') || [],
   },
   [Network.BASE]: {
     network: Network.BASE,
@@ -507,6 +509,8 @@ const baseConfigs: { [network: number]: BaseConfig } = {
     rpcPollingBlocksBackToTriggerUpdate: 0,
     uniswapV3EventLoggingSampleRate: 0,
     forceRpcFallbackDexs: [],
+    airSwapOverrideServerURLs:
+      process.env[`AIRSWAP_SERVER_URLS_11155111`]?.split(',') || [],
   },
 };
 
