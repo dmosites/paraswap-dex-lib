@@ -12,7 +12,7 @@ while (length--) {
     registryAddress: '0xe30E9c001dEFb5F0B04fD21662454A2427F4257A',
     registryBlock: registryBlocks[mainnets[length]],
     domainName: 'SWAP_ERC20',
-    domainVersion: '5.0',
+    domainVersion: '4.3',
   };
 }
 
