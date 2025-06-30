@@ -29,6 +29,7 @@ import {
   _reduceTickBitmap,
   _reduceTicks,
 } from '../uniswap-v3/contract-math/utils';
+import { INACTIVE_POOL_AGE_MS } from './constants';
 
 export class PancakeSwapV3EventPool extends StatefulEventSubscriber<PoolState> {
   handlers: {
@@ -301,6 +302,11 @@ export class PancakeSwapV3EventPool extends StatefulEventSubscriber<PoolState> {
       resBalance1.returnData,
       resState.returnData,
     ] as [bigint, bigint, DecodedStateMultiCallResultWithRelativeBitmaps];
+
+    const inactiveTimestampMs = Date.now() - INACTIVE_POOL_AGE_MS;
+    const isActive =
+      inactiveTimestampMs < _state.observation.blockTimestamp * 1000;
+    assert(isActive, 'Pool is inactive');
 
     const tickBitmap = {};
     const ticks = {};

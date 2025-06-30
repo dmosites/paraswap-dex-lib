@@ -175,11 +175,26 @@ export class Executor03BytecodeBuilder extends ExecutorBytecodeBuilder<
 
     swapCallData = hexConcat([dexCallData]);
 
+    if (curExchangeParam.transferSrcTokenBeforeSwap) {
+      const transferCallData = this.buildTransferCallData(
+        this.erc20Interface.encodeFunctionData('transfer', [
+          curExchangeParam.transferSrcTokenBeforeSwap,
+          swap.swapExchanges[0].srcAmount,
+        ]),
+        isETHAddress(swap.srcToken)
+          ? this.getWETHAddress(curExchangeParam)
+          : swap.srcToken.toLowerCase(),
+      );
+
+      swapCallData = hexConcat([transferCallData, swapCallData]);
+    }
+
     if (
       flags.dexes[index] % 4 !== 1 && // not sendEth
       !isETHAddress(swap.srcToken) &&
       !curExchangeParam.skipApproval &&
-      curExchangeParam.approveData
+      curExchangeParam.approveData &&
+      !curExchangeParam.transferSrcTokenBeforeSwap
     ) {
       // TODO: as we give approve for MAX_UINT and approve for current targetExchange was given
       // in previous paths, then for current path we can skip it
@@ -196,13 +211,16 @@ export class Executor03BytecodeBuilder extends ExecutorBytecodeBuilder<
     if (
       maybeWethCallData?.deposit &&
       isETHAddress(swap.srcToken) &&
-      !curExchangeParam.skipApproval &&
       curExchangeParam.needWrapNative
       // do deposit only for the first path with wrapping
       // exchangeParams.findIndex(p => p.needWrapNative) === index
     ) {
       let approveWethCalldata = '0x';
-      if (curExchangeParam.approveData) {
+      if (
+        curExchangeParam.approveData &&
+        !curExchangeParam.skipApproval &&
+        !curExchangeParam.transferSrcTokenBeforeSwap
+      ) {
         approveWethCalldata = this.buildApproveCallData(
           curExchangeParam.approveData.target,
           curExchangeParam.approveData.token,

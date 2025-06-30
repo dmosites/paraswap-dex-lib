@@ -41,6 +41,8 @@ import { PoolsRegistryHashKey } from '../uniswap-v3/uniswap-v3';
 
 export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
   readonly hasConstantPriceLargeAmounts = false;
+
+  // to prevent wrap/unwrap on v6 contract level, because we are doing wrap/unwrap on UniV4 Router level, check tx encoder for details
   needWrapNative = false;
 
   logger: Logger;
@@ -50,6 +52,8 @@ export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(UniswapV4Config);
+
+  private wethAddress: string;
 
   constructor(
     protected network: Network,
@@ -62,6 +66,9 @@ export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
     super(dexHelper, dexKey);
     this.logger = dexHelper.getLogger(dexKey);
     this.quoterIface = new Interface(QuoterAbi);
+
+    this.wethAddress =
+      this.dexHelper.config.data.wrappedNativeTokenAddress.toLowerCase();
 
     this.poolManager = new UniswapV4PoolManager(
       dexHelper,
@@ -186,9 +193,21 @@ export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
     const pricesPromises = availablePools.map(async poolId => {
       const pool = pools.find(p => p.id === poolId)!;
 
+      const fromAddress = from.address.toLowerCase();
+      const poolCurrency0 = pool.key.currency0;
+
+      const isFromEth = isETHAddress(fromAddress);
+      const isFromWeth = fromAddress === this.wethAddress;
+
+      const currency0IsEth = poolCurrency0 === NULL_ADDRESS;
+      const currency0IsWeth = poolCurrency0 === this.wethAddress;
+
       const zeroForOne =
-        from.address.toLowerCase() === pool.key.currency0.toLowerCase() ||
-        (isETHAddress(from.address) && pool.key.currency0 === NULL_ADDRESS);
+        fromAddress === poolCurrency0 ||
+        (isFromEth && currency0IsEth) || // ETH is src and native ETH pool
+        (isFromEth && currency0IsWeth) || // ETH is src and WETH pool
+        (isFromWeth && currency0IsEth); // WETH is src and native ETH pool
+      // WETH is src and WETH pool is handled in fromAddress === poolCurrency0 case
 
       const eventPool = await this.poolManager.getEventPool(
         poolId,
@@ -389,55 +408,43 @@ export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
     data: UniswapV4Data,
     side: SwapSide,
   ): DexExchangeParam {
-    let exchangeData: string;
+    let encodingMethod: (
+      srcToken: Address,
+      destToken: Address,
+      data: UniswapV4Data,
+      amount1: bigint,
+      amount2: bigint,
+      recipient: Address,
+      weth: Address,
+    ) => string;
 
-    if (data.path.length === 1) {
-      // Single hop
-      const path = data.path[0];
-      if (side === SwapSide.SELL) {
-        exchangeData = swapExactInputSingleCalldata(
-          srcToken,
-          destToken,
-          path.pool.key,
-          path.zeroForOne,
-          BigInt(srcAmount),
-          // destMinAmount (can be 0 on dex level)
-          0n,
-          recipient,
-        );
-      } else {
-        exchangeData = swapExactOutputSingleCalldata(
-          srcToken,
-          destToken,
-          path.pool.key,
-          path.zeroForOne,
-          BigInt(destAmount),
-          recipient,
-        );
-      }
+    if (data.path.length === 1 && side === SwapSide.SELL) {
+      // Single-hop encoding for SELL side
+      encodingMethod = swapExactInputSingleCalldata;
+    } else if (data.path.length === 1 && side === SwapSide.BUY) {
+      // Single-hop encoding for BUY side
+      encodingMethod = swapExactOutputSingleCalldata;
+    } else if (data.path.length > 1 && side === SwapSide.SELL) {
+      // Multi-hop encoding for SELL side
+      encodingMethod = swapExactInputCalldata;
+    } else if (data.path.length > 1 && side === SwapSide.BUY) {
+      // Multi-hop encoding for BUY side
+      encodingMethod = swapExactOutputCalldata;
     } else {
-      // Multi-hop
-      exchangeData = '0x';
-
-      if (side === SwapSide.SELL) {
-        exchangeData = swapExactInputCalldata(
-          srcToken,
-          destToken,
-          data,
-          BigInt(srcAmount),
-          0n,
-          recipient,
-        );
-      } else {
-        exchangeData = swapExactOutputCalldata(
-          srcToken,
-          destToken,
-          data,
-          BigInt(destAmount),
-          recipient,
-        );
-      }
+      throw new Error(
+        `${this.dexKey}-${this.network}: Logic error for side: ${side}, data.path.length: ${data.path.length}`,
+      );
     }
+
+    const exchangeData = encodingMethod(
+      srcToken,
+      destToken,
+      data,
+      BigInt(srcAmount),
+      side === SwapSide.SELL ? 0n : BigInt(destAmount),
+      recipient,
+      this.wethAddress,
+    );
 
     return {
       needWrapNative: this.needWrapNative,
@@ -445,8 +452,11 @@ export class UniswapV4 extends SimpleExchange implements IDex<UniswapV4Data> {
       dexFuncHasRecipient: true,
       exchangeData,
       targetExchange: this.routerAddress,
-      permit2Approval: true,
       returnAmountPos: undefined,
+      transferSrcTokenBeforeSwap: isETHAddress(srcToken)
+        ? undefined
+        : this.routerAddress,
+      skipApproval: true,
     };
   }
 

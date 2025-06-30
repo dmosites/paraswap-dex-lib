@@ -5,6 +5,7 @@ import { ethers } from 'ethers';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { ETHER_ADDRESS } from '../src/constants';
+import { merge } from 'lodash';
 
 const TENDERLY_TOKEN = process.env.TENDERLY_TOKEN!;
 const TENDERLY_ACCOUNT_ID = process.env.TENDERLY_ACCOUNT_ID!;
@@ -26,6 +27,8 @@ interface TokenStorageSlots {
   balanceSlot: string;
   allowanceSlot: string;
   isVyper?: boolean;
+  stateProxy?: string;
+  additionalOverrides?: StateOverride;
 }
 
 interface SimulateTransactionRequest {
@@ -73,6 +76,10 @@ interface SimulatedTransactionCall {
   storage_slot: string[] | undefined;
   calls: SimulatedTransactionCall[] | null;
 }
+
+type SimulatedTransactionCallWithParent = SimulatedTransactionCall & {
+  parentCall: SimulatedTransactionCall | null;
+};
 
 // not fully complete
 interface Simulation {
@@ -257,16 +264,17 @@ export class TenderlySimulator {
 
   getSLOADCalls = (
     callTrace: SimulatedTransactionCall,
-  ): SimulatedTransactionCall[] => {
-    const results: SimulatedTransactionCall[] = [];
+    parentCall: SimulatedTransactionCall | null = null,
+  ): SimulatedTransactionCallWithParent[] => {
+    const results: SimulatedTransactionCallWithParent[] = [];
 
     if (callTrace.call_type === 'SLOAD') {
-      results.push(callTrace);
+      results.push({ ...callTrace, parentCall });
     }
 
     if (callTrace.calls) {
       for (const call of callTrace.calls) {
-        results.push(...this.getSLOADCalls(call));
+        results.push(...this.getSLOADCalls(call, callTrace));
       }
     }
 
@@ -423,7 +431,7 @@ export class TenderlySimulator {
   async findTokenBalanceOfSlot(
     chainId: number,
     token: string,
-  ): Promise<{ slot: string; isVyper?: boolean }> {
+  ): Promise<{ slot: string; isVyper?: boolean; stateProxy?: string }> {
     const account = TenderlySimulator.DEFAULT_OWNER;
 
     const balanceOfSimulationRequest = this.buildBalanceOfSimulationRequest(
@@ -449,8 +457,12 @@ export class TenderlySimulator {
     const sloadCalls = this.getSLOADCalls(callTrace);
     // token's storage slots that were read during the `balanceOf` call
     const readSlots = sloadCalls
-      .map(call => call.storage_slot?.[0])
-      .filter<string>((slot): slot is string => !!slot);
+      .map(call => ({
+        slot: call.storage_slot?.[0],
+        address: call.storage_address,
+        parentCallType: call.parentCall ? call.parentCall.call_type : null,
+      }))
+      .filter(({ slot }) => !!slot);
 
     const startingPoints = [
       // regular contract
@@ -472,16 +484,33 @@ export class TenderlySimulator {
           candidateSlot,
           account,
         );
-        if (readSlots.includes(solitidyBalanceOfSlot)) {
-          return { slot: candidateSlot };
+        const foundSoliditySlot = readSlots.find(
+          ({ slot }) => slot === solitidyBalanceOfSlot,
+        );
+        if (foundSoliditySlot) {
+          return foundSoliditySlot.address !== token.toLowerCase() &&
+            foundSoliditySlot.parentCallType !== 'DELEGATECALL'
+            ? { slot: candidateSlot, stateProxy: foundSoliditySlot.address }
+            : { slot: candidateSlot };
         }
         // try vyper slot
         const vyperBalanceOfSlot = this.calculateVyperAddressBalanceSlot(
           candidateSlot,
           account,
         );
-        if (readSlots.includes(vyperBalanceOfSlot)) {
-          return { slot: candidateSlot, isVyper: true };
+        const foundVyperSlot = readSlots.find(
+          ({ slot }) => slot === vyperBalanceOfSlot,
+        );
+
+        if (foundVyperSlot) {
+          return foundVyperSlot.address === token.toLowerCase() &&
+            foundVyperSlot.parentCallType !== 'DELEGATECALL'
+            ? {
+                slot: candidateSlot,
+                isVyper: true,
+                stateProxy: foundVyperSlot.address,
+              }
+            : { slot: candidateSlot, isVyper: true };
         }
       }
     }
@@ -500,7 +529,7 @@ export class TenderlySimulator {
   async findTokenAllowanceSlot(
     chainId: number,
     token: string,
-  ): Promise<{ slot: string; isVyper?: boolean }> {
+  ): Promise<{ slot: string; isVyper?: boolean; stateProxy?: string }> {
     const account = TenderlySimulator.DEFAULT_OWNER;
     const spender = TenderlySimulator.DEFAULT_SPENDER;
 
@@ -525,11 +554,19 @@ export class TenderlySimulator {
 
     const callTrace = simulationDetails.transaction.transaction_info.call_trace;
 
+    // console.log(callTrace);
+
     const sloadCalls = this.getSLOADCalls(callTrace);
     // token's storage slots that were read during the `allowance` call
     const readSlots = sloadCalls
-      .map(call => call.storage_slot?.[0])
-      .filter<string>((slot): slot is string => !!slot);
+      .map(call => ({
+        slot: call.storage_slot?.[0],
+        address: call.storage_address,
+        parentCallType: call.parentCall ? call.parentCall.call_type : null,
+      }))
+      .filter(({ slot }) => !!slot);
+
+    console.log(readSlots);
 
     const startingPoints = [
       // regular contract
@@ -553,17 +590,44 @@ export class TenderlySimulator {
             account,
             spender,
           );
-        if (readSlots.includes(solidityAllowanceSlot)) {
-          return { slot: candidateSlot };
+
+        const foundSoliditySlot = readSlots.find(
+          ({ slot }) => solidityAllowanceSlot === slot,
+        );
+
+        if (foundSoliditySlot) {
+          return token.toLowerCase() !== foundSoliditySlot.address &&
+            foundSoliditySlot.parentCallType !== 'DELEGATECALL'
+            ? {
+                slot: candidateSlot,
+                stateProxy: foundSoliditySlot.address,
+              }
+            : {
+                slot: candidateSlot,
+              };
         }
+
         // try vyper
         const vyperAllowanceSlot = this.calculateVyperAddressAllowanceSlot(
           candidateSlot,
           account,
           spender,
         );
-        if (readSlots.includes(vyperAllowanceSlot)) {
-          return { slot: candidateSlot, isVyper: true };
+
+        const foundVyperSlot = readSlots.find(
+          ({ slot }) => vyperAllowanceSlot === slot,
+        );
+
+        if (foundVyperSlot) {
+          return token.toLowerCase() !== foundVyperSlot.address &&
+            foundVyperSlot.parentCallType !== 'DELEGATECALL'
+            ? {
+                slot: candidateSlot,
+                stateProxy: foundVyperSlot.address,
+              }
+            : {
+                slot: candidateSlot,
+              };
         }
       }
     }
@@ -610,6 +674,7 @@ export class TenderlySimulator {
       balanceSlot: balanceSlot.slot,
       allowanceSlot: allowanceSlot.slot,
       isVyper: balanceSlot.isVyper,
+      stateProxy: balanceSlot.stateProxy,
     };
 
     // no need to await
@@ -658,10 +723,15 @@ export class TenderlySimulator {
       tokenSlots.isVyper,
     );
     // add the balance override
-    stateOverride[token] ||= {};
-    stateOverride[token].storage ||= {};
-    stateOverride[token].storage[slotToOverride] =
+    const address = tokenSlots.stateProxy ? tokenSlots.stateProxy : token;
+    stateOverride[address] ||= {};
+    stateOverride[address].storage ||= {};
+    stateOverride[address].storage[slotToOverride] =
       ethers.utils.defaultAbiCoder.encode(['uint'], [amount]);
+
+    if (tokenSlots.additionalOverrides) {
+      merge(stateOverride, tokenSlots.additionalOverrides);
+    }
   }
 
   /**
@@ -691,9 +761,14 @@ export class TenderlySimulator {
       tokenSlots.isVyper,
     );
     // add the allowance override
-    stateOverride[token] ||= {};
-    stateOverride[token].storage ||= {};
-    stateOverride[token].storage[slotToOverride] =
+    const address = tokenSlots.stateProxy ? tokenSlots.stateProxy : token;
+    stateOverride[address] ||= {};
+    stateOverride[address].storage ||= {};
+    stateOverride[address].storage[slotToOverride] =
       ethers.utils.defaultAbiCoder.encode(['uint'], [amount]);
+
+    if (tokenSlots.additionalOverrides) {
+      merge(stateOverride, tokenSlots.additionalOverrides);
+    }
   }
 }
