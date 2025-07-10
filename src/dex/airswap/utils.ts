@@ -5,7 +5,6 @@ import { validateAndCast } from '../../lib/validators';
 import { IDexHelper } from '../../dex-helper/idex-helper';
 import { SwapSide } from '../../constants';
 import { AirSwapPricingResponse } from './types';
-import BigNumber from 'bignumber.js';
 
 export function getServerPricingKey(url: string): string {
   return `${encodeURIComponent(url)}-PRICING`.toLowerCase();
@@ -130,72 +129,4 @@ export function caster(data: unknown) {
     data,
     pricingResponseValidator,
   );
-}
-
-export function getPriceForAmount(
-  side: 'buy' | 'sell',
-  amount: string,
-  baseToken: string,
-  quoteToken: string,
-  pricing: any[],
-) {
-  for (const entry of pricing) {
-    if (
-      entry.baseToken.toLowerCase() === baseToken.toLowerCase() &&
-      entry.quoteToken.toLowerCase() === quoteToken.toLowerCase()
-    ) {
-      if (entry.minimum && new BigNumber(amount).lt(entry.minimum || 0)) {
-        throw new Error(
-          `Requested amount ${amount} does not meet minimum ${entry.minimum}`,
-        );
-      }
-      return side === 'buy'
-        ? calculateCost(amount, entry.ask)
-        : calculateCost(amount, entry.bid);
-    }
-  }
-  throw new Error(
-    `Requested pair ${quoteToken}/${baseToken} not found in provided pricing`,
-  );
-}
-
-export function calculateCost(amount: string, pricing: any) {
-  // TODO: Formula support
-  if (typeof pricing !== 'string') {
-    return calculateCostFromLevels(amount, pricing);
-  }
-  return null;
-}
-
-export function calculateCostFromLevels(
-  amount: string,
-  levels: [string, string][],
-) {
-  const totalAmount = new BigNumber(amount);
-  const totalAvailable = new BigNumber(levels[levels.length - 1][0]);
-  let totalCost = new BigNumber(0);
-  let previousLevel = new BigNumber(0);
-
-  if (totalAmount.gt(totalAvailable)) {
-    throw new Error(
-      `Requested amount (${totalAmount.toFixed()}) exceeds maximum available (${totalAvailable.toFixed()}).`,
-    );
-  }
-
-  for (let i = 0; i < levels.length; i++) {
-    let incrementalAmount: BigNumber;
-    if (totalAmount.gt(new BigNumber(levels[i][0]))) {
-      incrementalAmount = new BigNumber(levels[i][0]).minus(previousLevel);
-    } else {
-      incrementalAmount = new BigNumber(totalAmount).minus(previousLevel);
-    }
-    totalCost = totalCost.plus(
-      new BigNumber(incrementalAmount).multipliedBy(levels[i][1]),
-    );
-    previousLevel = new BigNumber(levels[i][0]);
-    if (totalAmount.lt(previousLevel)) break;
-  }
-  // Convert to whole-number string for BigInt parsing.
-  // Round DOWN (floor) so we never quote higher than the true calculated cost; makers remain free to under-quote.
-  return totalCost.decimalPlaces(0, BigNumber.ROUND_FLOOR).toFixed();
 }

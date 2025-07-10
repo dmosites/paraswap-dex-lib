@@ -1,8 +1,8 @@
 import { Interface } from 'ethers/lib/utils';
 import { assert } from 'ts-essentials';
 import { OptimalSwapExchange } from '@paraswap/core';
-import SwapERC20 from '@airswap/swap-erc20/build/contracts/SwapERC20.sol/SwapERC20.json'; // v5 ABI, ensure this is the latest from the v5 package
-import { getPriceForAmount } from './utils';
+import SwapERC20 from '@airswap/swap-erc20/build/contracts/SwapERC20.sol/SwapERC20.json';
+import { getCostByPricing } from '@airswap/utils';
 
 import { Fetcher } from '../../lib/fetcher/fetcher';
 import {
@@ -43,10 +43,6 @@ export const CACHE_TTL = 3000;
 export const POLLING_INTERVAL = 3000;
 export const GAS_COST = 100_000;
 
-/**
- * AirSwap
- * https://airswap.io/
- */
 export class AirSwap
   extends SimpleExchange
   implements IDex<AirSwapOrderResponse>
@@ -96,7 +92,6 @@ export class AirSwap
       }
     }
 
-    // Start the Registry to track server URLs
     this.registry = new AirSwapRegistry(
       this.dexKey,
       this.network,
@@ -148,7 +143,6 @@ export class AirSwap
               }
             }
 
-            // Body can be either { result: [...] } or the array directly
             if (Array.isArray(body?.result)) {
               return body.result;
             }
@@ -306,7 +300,7 @@ export class AirSwap
             const lookupBase = isSell ? quoteToken.address : baseToken.address;
             const lookupQuote = isSell ? baseToken.address : quoteToken.address;
 
-            const price = getPriceForAmount(
+            const price = getCostByPricing(
               makerSide,
               amount.toString(),
               lookupBase,
