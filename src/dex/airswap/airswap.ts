@@ -2,8 +2,7 @@ import { Interface } from 'ethers/lib/utils';
 import { assert } from 'ts-essentials';
 import { OptimalSwapExchange } from '@paraswap/core';
 import SwapERC20 from '@airswap/swap-erc20/build/contracts/SwapERC20.sol/SwapERC20.json';
-import { getPriceForAmount } from '@airswap/utils';
-import { Pricing } from '@airswap/types';
+import { getCostByPricing } from '@airswap/utils';
 
 import { Fetcher } from '../../lib/fetcher/fetcher';
 import {
@@ -28,7 +27,6 @@ import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
 
 import { AirSwapConfig } from './config';
 import { AirSwapOrderResponse } from './types';
-import { AirSwapPricingResponse } from './types';
 import { AirSwapRegistry } from './registry';
 import {
   getServerPricingKey,
@@ -38,15 +36,13 @@ import {
   caster,
 } from './utils';
 
+import { Pricing } from '@airswap/utils';
+
 export const MIN_EXPIRY = 100000;
 export const CACHE_TTL = 3000;
 export const POLLING_INTERVAL = 3000;
 export const GAS_COST = 100_000;
 
-/**
- * AirSwap
- * https://airswap.io/
- */
 export class AirSwap
   extends SimpleExchange
   implements IDex<AirSwapOrderResponse>
@@ -61,7 +57,7 @@ export class AirSwap
   private swapERC20Address: string;
 
   private registry: AirSwapRegistry | null = null;
-  private worker: Fetcher<AirSwapPricingResponse> | null = null;
+  private worker: Fetcher<any> | null = null;
   private overrideServerURLs: string[] = [];
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
@@ -83,10 +79,19 @@ export class AirSwap
    * @description Called by the engine at startup
    */
   async initializePricing(blockNumber: number): Promise<void> {
-    this.overrideServerURLs =
-      this.dexHelper.config.data.airSwapOverrideServerURLs;
+    // Access potentially untyped override field safely
+    this.overrideServerURLs = (
+      this.dexHelper.config.data as any
+    ).airSwapOverrideServerURLs;
 
-    // Start the Registry to track server URLs
+    // Fallback: use environment variable directly if not provided in config (tests)
+    if (!this.overrideServerURLs || this.overrideServerURLs.length === 0) {
+      const envOverride = process.env[`AIRSWAP_SERVER_URLS_${this.network}`];
+      if (envOverride) {
+        this.overrideServerURLs = envOverride.split(',');
+      }
+    }
+
     this.registry = new AirSwapRegistry(
       this.dexKey,
       this.network,
@@ -119,23 +124,49 @@ export class AirSwap
     this.worker?.stopPolling();
 
     // Start a Fetcher to update pricing on an interval
-    this.worker = new Fetcher(
+    this.worker = new Fetcher<any>(
       this.dexHelper.httpRequest,
       urls.map(url => ({
         info: {
           requestOptions: { url },
-          requestFunc: (options: any) => {
-            return getAllPricingERC20(options, this.dexHelper);
-          },
-          caster: caster.bind(this),
-        },
-        handler: async (resp: AirSwapPricingResponse) => {
-          const serverPricingKey = getServerPricingKey(url);
+          requestFunc: (options: any) =>
+            getAllPricingERC20(options, this.dexHelper),
+          caster: (data: unknown): any[] => {
+            let body: any = data;
 
-          // Write pricing to cache to be read async
+            // If Axios returned raw string, parse it
+            if (typeof body === 'string') {
+              try {
+                body = JSON.parse(body);
+              } catch {
+                return [];
+              }
+            }
+
+            if (Array.isArray(body?.result)) {
+              return body.result;
+            }
+
+            if (Array.isArray(body)) {
+              return body;
+            }
+
+            return [];
+          },
+        },
+        handler: async (levels: any[]) => {
+          this.logger.debug(
+            `Received levels type: ${Array.isArray(levels)} length: ${
+              levels?.length
+            }`,
+          );
+          if (!levels || !levels.length) {
+            this.logger.warn(`Invalid pricing payload from ${url}`);
+            return;
+          }
           await this.dexHelper.cache.rawset(
-            serverPricingKey,
-            JSON.stringify(resp.result),
+            getServerPricingKey(url),
+            JSON.stringify(levels),
             CACHE_TTL,
           );
         },
@@ -168,9 +199,14 @@ export class AirSwap
     side: SwapSide,
     _: number,
   ): Promise<string[]> {
-    const serverURLs: string[] =
-      this.overrideServerURLs ||
-      this.registry?.getServerURLs(quoteToken.address, baseToken.address);
+    // Prefer explicit overrides when provided and *non-empty*; otherwise ask
+    // the registry for servers supporting the token pair.
+    const fetchedURLs =
+      this.overrideServerURLs && this.overrideServerURLs.length
+        ? this.overrideServerURLs
+        : this.registry?.getServerURLs(quoteToken.address, baseToken.address);
+
+    const serverURLs: string[] = fetchedURLs ?? [];
     let tokenOne: Token;
     let tokenTwo: Token;
     if (side === SwapSide.SELL) {
@@ -207,35 +243,76 @@ export class AirSwap
     const poolIdentifiers =
       limitPools ??
       (await this.getPoolIdentifiers(quoteToken, baseToken, side, blockNumber));
+
     const result: ExchangePrices<AirSwapOrderResponse> = [];
 
-    // Get pricing by each of our servers (pools)
-    await poolIdentifiers.forEach(async poolIdentifier => {
+    for (const poolIdentifier of poolIdentifiers) {
       const prices: bigint[] = [];
       const url = decodeURIComponent(poolIdentifier.split('-')[3]);
       const serverPricingKey = getServerPricingKey(url);
 
-      // Get pricing from cache written by worker (fetcher)
-      const cached = await this.dexHelper.cache.rawget(serverPricingKey);
+      // Retrieve cached pricing published by the worker
+      let cached = await this.dexHelper.cache.rawget(serverPricingKey);
+
+      // If cache is empty (e.g., very first access before worker saved data),
+      // perform a direct, synchronous fetch to the maker to obtain pricing so
+      // that callers don't receive empty results.
+      if (!cached) {
+        try {
+          const resp = await getAllPricingERC20({ url }, this.dexHelper);
+          if (resp && Array.isArray((resp as any).data?.result)) {
+            cached = JSON.stringify((resp as any).data.result);
+            // Store in cache for subsequent reads (short TTL like worker).
+            await this.dexHelper.cache.rawset(
+              serverPricingKey,
+              cached,
+              CACHE_TTL,
+            );
+          }
+        } catch (e) {
+          this.logger.warn('Direct pricing fetch failed', url, e);
+        }
+      }
+
       if (cached) {
         const pricing: Pricing[] = JSON.parse(cached) || [];
 
-        // For each amount get price from cached pricing
-        amounts.forEach(async amount => {
+        for (const amount of amounts) {
           try {
-            const price = getPriceForAmount(
-              side === SwapSide.SELL ? 'sell' : 'buy',
+            // Map Paraswap side semantics to maker-side semantics.
+            // Maker pricing defines:
+            //   bid → maker buys baseToken, paying in quoteToken
+            //   ask → maker sells baseToken, receiving quoteToken
+            //
+            // Paraswap SELL (we provide quoteToken, receive baseToken)
+            //   → maker is BUYER of quoteToken, so we need BID prices.
+            // Paraswap BUY (we provide quoteToken, receive baseToken)
+            //   → maker is SELLER of baseToken, so we need ASK prices.
+
+            const isSell = side === SwapSide.SELL;
+
+            // Maker API: 'sell' -> use bid levels (maker buys baseToken),
+            // 'buy'  -> use ask levels (maker sells baseToken).
+            const makerSide = isSell ? 'sell' : 'buy';
+
+            // Paraswap SELL: srcToken (quoteToken param) is being sold, so it
+            // must be the maker's baseToken.  BUY keeps original orientation.
+            const lookupBase = isSell ? quoteToken.address : baseToken.address;
+            const lookupQuote = isSell ? baseToken.address : quoteToken.address;
+
+            const price = getCostByPricing(
+              makerSide,
               amount.toString(),
-              baseToken.address,
-              quoteToken.address,
+              lookupBase,
+              lookupQuote,
               pricing,
             );
-            if (price) prices.push(BigInt(price));
+            prices.push(BigInt(price ?? 0));
           } catch (e) {
             prices.push(BigInt(0));
             this.logger.warn('getPricesVolume', url, e);
           }
-        });
+        }
       }
       result.push({
         gasCost: GAS_COST,
@@ -251,7 +328,7 @@ export class AirSwap
         ),
         poolAddresses: [this.swapERC20Address],
       } as PoolPrices<AirSwapOrderResponse>);
-    });
+    }
     return result;
   }
 
@@ -291,7 +368,6 @@ export class AirSwap
       MIN_EXPIRY.toString(),
       options.txOrigin,
     );
-
     return [
       {
         ...optimalSwapExchange,

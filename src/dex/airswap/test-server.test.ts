@@ -8,27 +8,56 @@ import {
   createOrderERC20Signature,
   toAtomicString,
   toDecimalString,
-  getCostFromPricing,
+  getCostByPricing,
 } from '@airswap/utils';
-import { Pricing } from '@airswap/types';
-import { SmartTokens } from '../../../tests/constants-e2e';
+import { Pricing } from '@airswap/utils';
+import { Tokens } from '../../../tests/constants-e2e';
 import { PORT_TEST_SERVER } from '../../constants';
+import { AirSwapConfig } from './config';
 
-const smartTokens = SmartTokens[1];
+const smartTokens = Tokens[1];
 const Levels: Pricing[] = [
   {
     baseToken: smartTokens.DAI.address,
     quoteToken: smartTokens.WETH.address,
     minimum: '0',
-    bid: [['10000000000000000000', '0.9']],
-    ask: [['10000000000000000000', '1.1']],
+    bid: [['10000000000000000000', '1']],
+    ask: [['10000000000000000000', '2']],
   },
   {
     baseToken: smartTokens.WETH.address,
     quoteToken: smartTokens.DAI.address,
     minimum: '0',
     bid: [['10000000000000000000', '1']],
-    ask: [['10000000000000000000', '1']],
+    ask: [['10000000000000000000', '2000']],
+  },
+  {
+    baseToken: smartTokens.WETH.address,
+    quoteToken: smartTokens.USDC.address,
+    minimum: '0',
+    bid: [['10000000000000000000', '1800']],
+    ask: [['10000000000000000000', '2000']],
+  },
+  {
+    baseToken: smartTokens.USDC.address,
+    quoteToken: smartTokens.WETH.address,
+    minimum: '0',
+    bid: [['1000000000', '1']],
+    ask: [['1000000000', '2']],
+  },
+  {
+    baseToken: smartTokens.WETH.address,
+    quoteToken: smartTokens.DAI.address,
+    minimum: '0',
+    bid: [['10000000000000000000', '1800']],
+    ask: [['10000000000000000000', '2000']],
+  },
+  {
+    baseToken: smartTokens.DAI.address,
+    quoteToken: smartTokens.WETH.address,
+    minimum: '0',
+    bid: [['10000000000000000000', '1']],
+    ask: [['10000000000000000000', '2']],
   },
 ];
 
@@ -77,7 +106,7 @@ export const startTestServer = (account: ethers.Wallet) => {
         switch (method) {
           case 'getSignerSideOrderERC20':
             senderAmount = toDecimalString(params.senderAmount, senderDecimals);
-            signerAmount = getCostFromPricing(
+            signerAmount = getCostByPricing(
               'buy',
               senderAmount,
               senderToken,
@@ -87,7 +116,7 @@ export const startTestServer = (account: ethers.Wallet) => {
             break;
           case 'getSenderSideOrderERC20':
             signerAmount = toDecimalString(params.signerAmount, signerDecimals);
-            senderAmount = getCostFromPricing(
+            senderAmount = getCostByPricing(
               'sell',
               signerAmount,
               signerToken,
@@ -115,8 +144,8 @@ export const startTestServer = (account: ethers.Wallet) => {
             account.privateKey,
             params.swapContract,
             params.chainId,
-            '4.1',
-            'SWAP_ERC20',
+            AirSwapConfig.AirSwap[1].domainVersion,
+            AirSwapConfig.AirSwap[1].domainName,
           );
 
           response = result(id, {
@@ -133,8 +162,25 @@ export const startTestServer = (account: ethers.Wallet) => {
     return res.status(200).json(response);
   });
 
-  const server = app.listen(PORT_TEST_SERVER);
-  return () => {
+  // Resolve the port **now** (after the test has set process.env.TEST_PORT).
+  // Fallback order: explicit env var -> constant (may be undefined) -> 0 (OS-assigned random port).
+  const port = process.env.TEST_PORT || PORT_TEST_SERVER || 0;
+  const server = app.listen(port);
+
+  function stop() {
     server.close();
-  };
+  }
+  (stop as any).port = (server.address() as any).port as number;
+  return stop as (() => void) & { port: number };
 };
+
+// ------------------------------------------------------------------
+// Dummy test so Jest treats this file as a valid test suite.
+// It does NOT affect the maker server logic.
+// ------------------------------------------------------------------
+
+describe('AirSwap Dummy Maker Server', () => {
+  it('helper file loaded', () => {
+    expect(true).toBe(true);
+  });
+});

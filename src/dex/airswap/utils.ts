@@ -26,19 +26,26 @@ export function getPoolIdentifier(
 }
 
 export async function getAllPricingERC20(options: any, dexHelper: IDexHelper) {
-  return await dexHelper.httpRequest.request({
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    data: {
-      id: uuid(),
-      method: 'getAllPricingERC20',
-      params: {},
-    },
-    ...options,
-  });
+  return await dexHelper.httpRequest
+    .request({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      data: {
+        id: uuid(),
+        method: 'getAllPricingERC20',
+        params: {},
+      },
+      ...options,
+    })
+    .then(res => {
+      if (res && (res as any).data === undefined) {
+        (res as any).data = null;
+      }
+      return res;
+    });
 }
 
 export async function getOrderERC20(

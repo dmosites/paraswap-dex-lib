@@ -1,7 +1,7 @@
 import _ from 'lodash';
 import { Interface, LogDescription } from 'ethers/lib/utils';
 import { DeepReadonly } from 'ts-essentials';
-import { Protocols } from '@airswap/constants';
+import { ProtocolIds } from '@airswap/utils';
 
 import { Log, Logger, BlockHeader } from '../../types';
 import { catchParseLogError } from '../../utils';
@@ -86,7 +86,7 @@ export class AirSwapRegistry extends StatefulEventSubscriber<AirSwapRegistryStat
       return this.serverURLsOverride;
     }
     const stakers =
-      this.state?.stakersByProtocol[Protocols.RequestForQuoteERC20] || [];
+      this.state?.stakersByProtocol[ProtocolIds.RequestForQuoteERC20] || [];
     return stakers
       ?.filter(staker => {
         if (tokenOne && !this.state?.stakersByToken[tokenOne].includes(staker))

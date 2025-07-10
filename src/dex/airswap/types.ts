@@ -1,5 +1,5 @@
 import { Address } from '../../types';
-import { Levels, OrderERC20 } from '@airswap/types';
+import { Levels, OrderERC20 } from '@airswap/utils';
 
 export type AirSwapDeployment = {
   swapERC20Address: Address;
