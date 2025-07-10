@@ -9,7 +9,7 @@ import {
   NumberAsString,
   DexExchangeParam,
 } from '../../types';
-import { SwapSide, Network } from '../../constants';
+import { SwapSide, Network, NO_USD_LIQUIDITY } from '../../constants';
 import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
 import { getDexKeysWithNetwork } from '../../utils';
 import { IDex } from '../../dex/idex';
@@ -210,7 +210,7 @@ export class SkyConverter
     const isOld = tokenAddress.toLowerCase() === this.oldToken;
     const isNew = tokenAddress.toLowerCase() === this.newToken;
 
-    if (isOld && this.config.oldToNewFunctionName) {
+    if (isOld) {
       return [
         {
           exchange: this.dexKey,
@@ -219,14 +219,19 @@ export class SkyConverter
             {
               decimals: 18,
               address: this.newToken,
+              liquidityUSD: this.config.newToOldFunctionName
+                ? 1000000000
+                : NO_USD_LIQUIDITY,
             },
           ],
-          liquidityUSD: 1000000000, // infinite
+          liquidityUSD: this.config.oldToNewFunctionName
+            ? 1000000000
+            : NO_USD_LIQUIDITY,
         },
       ];
     }
 
-    if (isNew && this.config.newToOldFunctionName) {
+    if (isNew) {
       return [
         {
           exchange: this.dexKey,
@@ -235,9 +240,14 @@ export class SkyConverter
             {
               decimals: 18,
               address: this.oldToken,
+              liquidityUSD: this.config.oldToNewFunctionName
+                ? 1000000000
+                : NO_USD_LIQUIDITY,
             },
           ],
-          liquidityUSD: 1000000000, // infinite
+          liquidityUSD: this.config.newToOldFunctionName
+            ? 1000000000
+            : NO_USD_LIQUIDITY,
         },
       ];
     }

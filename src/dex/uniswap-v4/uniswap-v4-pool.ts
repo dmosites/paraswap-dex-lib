@@ -484,10 +484,11 @@ export class UniswapV4Pool extends StatefulEventSubscriber<PoolState> {
     try {
       const event = this.logDecoder(log);
       if (event.name in this.handlers) {
-        const _state = _.cloneDeep(state) as PoolState;
-
         const id = event.args.id.toLowerCase();
+
         if (id && id !== this.poolId.toLowerCase()) return null; // skip not relevant events
+
+        const _state = _.cloneDeep(state) as PoolState;
 
         try {
           const newState = await this.handlers[event.name](
@@ -501,10 +502,7 @@ export class UniswapV4Pool extends StatefulEventSubscriber<PoolState> {
           this.logger.error(
             `${this.parentName}: PoolManager ${this.config.poolManager} (pool id ${this.poolId}), ` +
               `network=${this.dexHelper.config.data.network}: Unexpected ` +
-              `error while handling event on blockNumber=${blockHeader.number}, ` +
-              `blockHash=${blockHeader.hash} and parentHash=${
-                blockHeader.parentHash
-              } for ${this.parentName}, ${JSON.stringify(event)}`,
+              `error while handling event on blockNumber=${blockHeader.number} for ${this.parentName}, txHash=${log.transactionHash}, logIndex=${log.logIndex}, event=${event?.name}`,
             e,
           );
 

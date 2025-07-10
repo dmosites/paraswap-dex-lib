@@ -28,7 +28,6 @@ import { IDexHelper } from '../dex-helper';
 import { SwapSide } from '../constants';
 import { Adapters } from '../types';
 import { Lido } from './lido/lido';
-import { Excalibur } from './uniswap-v2/excalibur';
 import { MakerPsm } from './maker-psm/maker-psm';
 import { KyberDmm } from './kyberdmm/kyberdmm';
 import { GMX } from './gmx/gmx';
@@ -105,12 +104,15 @@ import { UsualMUsd0 } from './usual/usual-m-usd0';
 import { MWrappedM } from './usual/m-wrapped-m';
 import { WrappedMM } from './usual/wrapped-m-m';
 import { UsualPP } from './usual-pp/usual-pp';
+import { AlgebraIntegral } from './algebra-integral/algebra-integral';
 import { Ekubo } from './ekubo/ekubo';
 import { UniswapV4 } from './uniswap-v4/uniswap-v4';
 import { PancakeSwapV2 } from './uniswap-v2/pancake-swap-v2';
 import { uniswapV4Merge } from './uniswap-v4/optimizer';
+import { AaveV3PtRollOver } from './aave-v3-pt-roll-over/aave-v3-pt-roll-over';
 import { RingV2 } from './uniswap-v2/ring-v2';
 import { AirSwap } from './airswap/airswap';
+import { UsdcTransmuter } from './usdc-transmuter/usdc-transmuter';
 
 const LegacyDexes = [
   CurveV2,
@@ -143,13 +145,13 @@ const Dexes = [
   UniswapV3,
   UniswapV4,
   Algebra,
+  AlgebraIntegral,
   PancakeSwapV2,
   PancakeswapV3,
   VelodromeSlipstream,
   BiSwap,
   MDEX,
   Dfyn,
-  Excalibur,
   AaveV2,
   AaveV3,
   IdleDao,
@@ -213,7 +215,9 @@ const Dexes = [
   UsualMUsd0,
   UsualPP,
   Ekubo,
+  AaveV3PtRollOver,
   RingV2,
+  UsdcTransmuter,
   AirSwap,
 ];
 
