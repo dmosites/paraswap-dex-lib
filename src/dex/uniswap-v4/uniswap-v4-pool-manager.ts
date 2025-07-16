@@ -249,6 +249,12 @@ export class UniswapV4PoolManager extends StatefulEventSubscriber<PoolManagerSta
       pools = pools.concat(currentSubgraphPools);
     }
 
+    if (this.config.skipPoolsWithUnconventionalFees) {
+      pools = pools.filter(
+        pool => !this.isPoolWithUnconventionalFees(pool.fee),
+      );
+    }
+
     this.dexHelper.cache.setexAndCacheLocally(
       this.parentName,
       this.network,
@@ -277,6 +283,14 @@ export class UniswapV4PoolManager extends StatefulEventSubscriber<PoolManagerSta
       this.logger.warn(
         `Pool ${id} has hooks ${hooks}, which is not supported yet. Skipping.`,
       );
+      return {};
+    }
+
+    if (
+      this.config.skipPoolsWithUnconventionalFees &&
+      this.isPoolWithUnconventionalFees(fee)
+    ) {
+      this.logger.warn(`Skipping pool ${id} with unconventional fees ${fee}.`);
       return {};
     }
 
@@ -320,5 +334,9 @@ export class UniswapV4PoolManager extends StatefulEventSubscriber<PoolManagerSta
     this.eventPools[id] = eventPool;
 
     return {};
+  }
+
+  private isPoolWithUnconventionalFees(fee: string | number): boolean {
+    return +fee % 100 !== 0;
   }
 }

@@ -37,6 +37,7 @@ import {
   UniswapV3Param,
   UniswapV3ParamsDirect,
   UniswapV3ParamsDirectBase,
+  UniswapV3Router,
   UniswapV3SimpleSwapParams,
 } from './types';
 import {
@@ -46,6 +47,7 @@ import {
 import { Adapters, PoolsToPreload, UniswapV3Config } from './config';
 import { UniswapV3EventPool } from './uniswap-v3-pool';
 import UniswapV3RouterABI from '../../abi/uniswap-v3/UniswapV3Router.abi.json';
+import UniswapSwapRouter02ABI from '../../abi/uniswap-v3/UniswapSwapRouter02.abi.json';
 import UniswapV3QuoterV2ABI from '../../abi/uniswap-v3/UniswapV3QuoterV2.abi.json';
 import UniswapV3MultiABI from '../../abi/uniswap-v3/UniswapMulti.abi.json';
 import DirectSwapABI from '../../abi/DirectSwap.json';
@@ -89,8 +91,12 @@ export class UniswapV3
   implements IDex<UniswapV3Data, UniswapV3Param | UniswapV3ParamsDirect>
 {
   protected readonly factory: UniswapV3Factory;
+  readonly routerIface: Interface;
   readonly isFeeOnTransferSupported: boolean = false;
   readonly eventPools: Record<string, UniswapV3EventPool | null> = {};
+
+  protected totalPoolsCount = 0;
+  protected nonNullPoolsCount = 0;
 
   readonly hasConstantPriceLargeAmounts = false;
   readonly needWrapNative = true;
@@ -113,6 +119,8 @@ export class UniswapV3
         'PharaohV2',
         'AlienBaseV3',
         'OkuTradeV3',
+        'PangolinV3',
+        'Wagmi',
       ]),
     );
 
@@ -128,7 +136,6 @@ export class UniswapV3
     dexKey: string,
     protected dexHelper: IDexHelper,
     protected adapters = Adapters[network] || {},
-    readonly routerIface = new Interface(UniswapV3RouterABI),
     readonly quoterIface = new Interface(UniswapV3QuoterV2ABI),
     protected config = UniswapV3Config[dexKey][network],
     protected poolsToPreload = PoolsToPreload[dexKey]?.[network] || [],
@@ -139,6 +146,11 @@ export class UniswapV3
       UniswapV3Config[dexKey][network].subgraphType,
   ) {
     super(dexHelper, dexKey);
+    const routerABI =
+      this.config.routerType === UniswapV3Router.SwapRouter02
+        ? UniswapSwapRouter02ABI
+        : UniswapV3RouterABI;
+    this.routerIface = new Interface(routerABI);
     this.logger = dexHelper.getLogger(dexKey + '-' + network);
     this.uniswapMulti = new this.dexHelper.web3Provider.eth.Contract(
       UniswapV3MultiABI as AbiItem[],
@@ -272,7 +284,9 @@ export class UniswapV3
     if (pool === null) return null;
 
     if (pool) {
-      if (!pool.initFailed) {
+      if (pool.isInactive()) {
+        return null;
+      } else if (!pool.initFailed) {
         return pool;
       } else {
         // if init failed then prefer to early return pool with empty state to fallback to rpc call
@@ -284,6 +298,9 @@ export class UniswapV3
         }
         // else pursue with re-try initialization
       }
+    } else {
+      // new pool going to be added to the mapping
+      this.totalPoolsCount++;
     }
 
     const [token0, token1] = this._sortTokens(srcAddress, destAddress);
@@ -359,19 +376,16 @@ export class UniswapV3
     }
 
     if (pool !== null) {
-      const allEventPools = Object.values(this.eventPools);
       // if pool was created, delete pool record from non existing set
       this.dexHelper.cache
         .zrem(this.notExistingPoolSetKey, [key])
         .catch(() => {});
-      this.logger.info(
-        `starting to listen to new non-null pool: ${key}. Already following ${allEventPools
-          // Not that I like this reduce, but since it is done only on initialization, expect this to be ok
-          .reduce(
-            (acc, curr) => (curr !== null ? ++acc : acc),
-            0,
-          )} non-null pools or ${allEventPools.length} total pools`,
-      );
+      if (!pool.initFailed) {
+        this.nonNullPoolsCount++;
+        this.logger.info(
+          `starting to listen to new non-null pool: ${key}. Already following ${this.nonNullPoolsCount} non-null pools or ${this.totalPoolsCount} total pools`,
+        );
+      }
     }
 
     this.eventPools[
@@ -1211,17 +1225,12 @@ export class UniswapV3
 
     const _tokenAddress = tokenAddress.toLowerCase();
 
-    let liquidityField = 'totalValueLockedUSD';
-
-    if (this.dexKey === 'AlienBaseV3') {
-      liquidityField = 'liquidity';
-    }
+    const liquidityField = this.config.liquidityField ?? 'totalValueLockedUSD';
 
     const res = await this._querySubgraph(
       `query ($token: Bytes!, $count: Int) {
                 pools0: pools(first: $count, orderBy: ${liquidityField}, orderDirection: desc, where: {token0: $token}) {
                 id
-                feeTier
                 token0 {
                   id
                   decimals
@@ -1234,7 +1243,6 @@ export class UniswapV3
               }
               pools1: pools(first: $count, orderBy: ${liquidityField}, orderDirection: desc, where: {token1: $token}) {
                 id
-                feeTier
                 token0 {
                   id
                   decimals
@@ -1262,12 +1270,6 @@ export class UniswapV3
     const pools0: PoolLiquidity[] = _.map(res.pools0, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
-      poolIdentifier: this.getPoolIdentifier(
-        pool.token0.id,
-        pool.token1.id,
-        pool.feeTier,
-        // TODO-ap: add tickSpacing for Velodrome/Aerodrome dexs
-      ),
       connectorTokens: [
         {
           address: pool.token1.id.toLowerCase(),
@@ -1280,12 +1282,6 @@ export class UniswapV3
     const pools1: PoolLiquidity[] = _.map(res.pools1, pool => ({
       exchange: this.dexKey,
       address: pool.id.toLowerCase(),
-      poolIdentifier: this.getPoolIdentifier(
-        pool.token0.id,
-        pool.token1.id,
-        pool.feeTier,
-        // TODO-ap: add tickSpacing for Velodrome/Aerodrome dexs
-      ),
       connectorTokens: [
         {
           address: pool.token0.id.toLowerCase(),
